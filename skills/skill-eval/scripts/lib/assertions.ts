@@ -1,0 +1,112 @@
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
+import { containedPath, readJson, writeJson } from "./json.ts";
+import { loadSuite, verifyRunIntegrity } from "./workspace.ts";
+import type { DeterministicCheck, EvalCase, ExecutionRecord, GradedExpectation, GradingResult } from "./types.ts";
+
+function matches(content: string, value: string, regex = false): boolean {
+  return regex ? new RegExp(value, "m").test(content) : content.includes(value);
+}
+
+function jsonPointer(value: unknown, pointer: string): unknown {
+  if (pointer === "") return value;
+  if (!pointer.startsWith("/")) throw new Error("JSON pointer must start with /");
+  return pointer.slice(1).split("/").reduce<unknown>((current, token) => {
+    const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+    if (Array.isArray(current)) return current[Number(key)];
+    if (current && typeof current === "object") return (current as Record<string, unknown>)[key];
+    return undefined;
+  }, value);
+}
+
+async function inspect(record: ExecutionRecord, check: DeterministicCheck): Promise<{ passed: boolean; evidence: string }> {
+  if (check.type === "exit_success") {
+    const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && !record.source_mutated;
+    return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, source_mutated=${record.source_mutated}` };
+  }
+  if (check.type === "final_contains" || check.type === "final_not_contains") {
+    const found = matches(record.host_result.final_text, check.value, check.regex);
+    const passed = check.type === "final_contains" ? found : !found;
+    return { passed, evidence: `${check.type}: ${JSON.stringify(check.value)} ${found ? "was" : "was not"} present in final output` };
+  }
+  const path = containedPath(record.output_dir, check.path);
+  let exists = true;
+  try { await stat(path); } catch { exists = false; }
+  if (check.type === "file_exists" || check.type === "file_not_exists") {
+    const passed = check.type === "file_exists" ? exists : !exists;
+    return { passed, evidence: `${check.path} ${exists ? "exists" : "does not exist"}` };
+  }
+  if (!exists) return { passed: false, evidence: `${check.path} does not exist` };
+  const buffer = await readFile(path);
+  if (buffer.includes(0)) throw new Error(`${check.path} is binary and has no configured inspector`);
+  if (check.type === "file_contains" || check.type === "file_not_contains") {
+    const found = matches(buffer.toString("utf8"), check.value, check.regex);
+    const passed = check.type === "file_contains" ? found : !found;
+    return { passed, evidence: `${check.path}: ${JSON.stringify(check.value)} ${found ? "was" : "was not"} present` };
+  }
+  const parsed = JSON.parse(buffer.toString("utf8"));
+  const actual = jsonPointer(parsed, check.pointer);
+  const passed = JSON.stringify(actual) === JSON.stringify(check.value);
+  return { passed, evidence: `${check.path}${check.pointer} was ${JSON.stringify(actual)}` };
+}
+
+export async function gradeExecution(record: ExecutionRecord, evalCase: EvalCase): Promise<GradingResult> {
+  const expectations: GradedExpectation[] = [];
+  for (const expectation of evalCase.expectations) {
+    if (!expectation.check) {
+      expectations.push({ ...expectation, passed: null, blocked: false, evidence: "qualitative expectation reserved for blind judges" });
+      continue;
+    }
+    try {
+      const result = await inspect(record, expectation.check);
+      expectations.push({ ...expectation, passed: result.passed, blocked: false, evidence: result.evidence });
+    } catch (error) {
+      expectations.push({ ...expectation, passed: null, blocked: true, evidence: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  const passed = expectations.filter((item) => item.passed === true).length;
+  const failed = expectations.filter((item) => item.passed === false).length;
+  const blocked = expectations.filter((item) => item.blocked).length;
+  const qualitative = expectations.filter((item) => item.passed === null && !item.blocked).length;
+  const graded = passed + failed;
+  const runFailed = record.host_result.exit_code !== 0 || record.host_result.timed_out || record.source_mutated;
+  const expectationCriticalFailures = expectations.filter((item) => item.severity === "critical" && item.passed === false).length;
+  const caseCriticalFailure = evalCase.severity === "critical" && failed > 0 && expectationCriticalFailures === 0 ? 1 : 0;
+  return {
+    schema_version: 1,
+    attempt_id: record.attempt_id,
+    partition: record.partition,
+    host: record.host,
+    eval_id: record.eval_id,
+    version: record.version,
+    repetition: record.repetition,
+    expectations,
+    summary: {
+      passed,
+      failed,
+      blocked,
+      qualitative,
+      total: expectations.length,
+      pass_rate: runFailed ? 0 : graded > 0 ? passed / graded : null,
+      critical_failed: expectationCriticalFailures + caseCriticalFailure + (runFailed ? 1 : 0),
+      critical_blocked: expectations.filter((item) => item.severity === "critical" && item.blocked).length,
+      run_failed: runFailed,
+    },
+  };
+}
+
+export async function gradeMatrix(runDir: string): Promise<GradingResult[]> {
+  await verifyRunIntegrity(runDir);
+  const records = await readJson<ExecutionRecord[]>(join(runDir, "executions.json"));
+  const suite = await loadSuite(runDir);
+  const grades: GradingResult[] = [];
+  for (const record of records) {
+    const evalCase = suite.evals.find((item) => item.id === record.eval_id);
+    if (!evalCase) throw new Error(`execution references missing eval: ${record.eval_id}`);
+    const grade = await gradeExecution(record, evalCase);
+    await writeJson(join(record.run_dir, "grading.json"), grade);
+    grades.push(grade);
+  }
+  await writeJson(join(runDir, "gradings.json"), grades);
+  return grades;
+}

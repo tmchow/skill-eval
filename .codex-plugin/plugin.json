@@ -1,0 +1,36 @@
+{
+  "name": "skill-eval",
+  "version": "0.1.0",
+  "description": "Run cross-model skill evals that benchmark each revision, iteratively autofix failures, and prove improvements across Claude Code and Codex.",
+  "author": {
+    "name": "Trevin Chow"
+  },
+  "homepage": "https://github.com/tmchow/skill-eval",
+  "repository": "https://github.com/tmchow/skill-eval",
+  "license": "MIT",
+  "keywords": [
+    "evaluation",
+    "skills",
+    "claude-code",
+    "codex",
+    "benchmarking"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Skill Eval",
+    "shortDescription": "Cross-model skill evals with iterative autofixes",
+    "longDescription": "Benchmark each skill revision with isolated cross-model evals, iteratively autofix failures, guard against regressions, and promote only improvements proven across Claude Code and Codex.",
+    "developerName": "Trevin Chow",
+    "category": "Coding",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/tmchow/skill-eval",
+    "defaultPrompt": [
+      "Evaluate the skill I am editing",
+      "Compare this skill revision against HEAD"
+    ]
+  }
+}

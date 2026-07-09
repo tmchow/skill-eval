@@ -1,0 +1,7 @@
+Skill Eval
+Copyright (c) 2026 Trevin Chow
+
+This clean-room implementation was inspired by the skill evaluation methodology
+published in Anthropic's Claude Code skill-creator plugin. No Anthropic source
+code is included in this project. Anthropic and Claude are trademarks of
+Anthropic PBC. Codex and OpenAI are trademarks of OpenAI.
