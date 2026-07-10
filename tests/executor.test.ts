@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMatrix } from "../skills/skill-eval/scripts/lib/executor.ts";
@@ -9,10 +9,14 @@ import type { HostAdapter, HostRequest, HostResult, RunState } from "../skills/s
 class FakeAdapter implements HostAdapter {
   name = "codex" as const;
   prompts: string[] = [];
+  requests: HostRequest[] = [];
   mutateSkill = false;
+  failOnCall: number | null = null;
 
   async execute(request: HostRequest): Promise<HostResult> {
+    if (this.failOnCall === this.requests.length + 1) throw new Error("simulated interruption");
     this.prompts.push(request.prompt);
+    this.requests.push(request);
     const skillMatch = request.prompt.match(/Exact skill snapshot: (.+)/);
     if (this.mutateSkill && skillMatch) await writeFile(join(skillMatch[1]!, "MUTATED"), "bad");
     await writeFile(request.eventPath, '{"type":"turn.completed"}\n');
@@ -34,9 +38,12 @@ async function preparedRun(): Promise<{ runDir: string; adapter: FakeAdapter }> 
   await mkdir(authored, { recursive: true });
   await mkdir(anchor, { recursive: true });
   await mkdir(join(runDir, "fixtures", "case"), { recursive: true });
+  await mkdir(join(runDir, "fixtures", "case", "bin"), { recursive: true });
   await writeFile(join(authored, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n# Authored\n");
   await writeFile(join(anchor, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n# Anchor\n");
   await writeFile(join(runDir, "fixtures", "case", "input.txt"), "fixture\n");
+  await writeFile(join(runDir, "fixtures", "case", "bin", "codex"), "#!/bin/sh\nprintf fake-peer\n");
+  await chmod(join(runDir, "fixtures", "case", "bin", "codex"), 0o755);
   await writeJson(join(runDir, "suite.json"), {
     schema_version: 1, skill_name: "demo", hypothesis: "better", evals: [{
       id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "Do the thing.", fixture: "fixture",
@@ -65,9 +72,32 @@ describe("matrix execution", () => {
 
     expect(records).toHaveLength(2);
     expect(adapter.prompts[0]).toContain("Exact skill snapshot:");
+    expect(adapter.prompts[0]).toContain("Do not invoke a same-name installed skill");
     expect(adapter.prompts[0]).not.toBe(adapter.prompts[1]);
     expect(await readFile(join(records[0]!.run_dir, "workspace", "input.txt"), "utf8")).toBe("fixture\n");
     expect(records.every((record) => !record.source_mutated)).toBe(true);
+  });
+
+  test("prepends fixture-local fake CLIs to the task environment", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const records = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], repetitions: 1, timeoutMs: 1_000, adapters: { codex: adapter } });
+
+    expect(adapter.requests[0]?.env?.PATH?.split(":")[0]).toBe(join(records[0]!.run_dir, "workspace", "bin"));
+  });
+
+  test("omits frozen evaluator-only files from executor skill copies", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const state = await readJson<RunState>(join(runDir, "run.json"));
+    await mkdir(join(state.versions.authored!.path, "references"), { recursive: true });
+    await writeFile(join(state.versions.authored!.path, "references", "behavior-eval.md"), "answer key\n");
+    state.executor_exclusions = ["references/behavior-eval.md"];
+    state.hashes.versions.authored = await hashTree(state.versions.authored!.path);
+    await writeJson(join(runDir, "run.json"), state);
+
+    const records = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], adapters: { codex: adapter } });
+
+    expect(await Bun.file(join(records[0]!.skill_path!, "references", "behavior-eval.md")).exists()).toBe(false);
+    expect(records[0]!.executor_exclusions).toEqual(["references/behavior-eval.md"]);
   });
 
   test("marks a run failed when the skill snapshot is mutated", async () => {
@@ -103,5 +133,46 @@ describe("matrix execution", () => {
     expect(training.every((item) => item.partition === "training")).toBe(true);
     expect(holdout.map((item) => item.eval_id)).toEqual(["held-out"]);
     expect(holdout.every((item) => item.partition === "holdout")).toBe(true);
+  });
+
+  test("persists and grades completed arms incrementally, then resumes only missing arms", async () => {
+    const { runDir, adapter } = await preparedRun();
+    adapter.failOnCall = 2;
+
+    await expect(runMatrix({
+      runDir,
+      versions: ["anchor", "authored"],
+      hosts: ["codex"],
+      attemptId: "resumable",
+      concurrency: 1,
+      adapters: { codex: adapter },
+    } as any)).rejects.toThrow("simulated interruption");
+
+    expect(await readJson<any[]>(join(runDir, "executions.json"))).toHaveLength(1);
+    expect(await readJson<any[]>(join(runDir, "gradings.json"))).toHaveLength(1);
+    expect(await readJson<any>(join(runDir, "artifacts", "runs", "resumable", "attempt.json"))).toMatchObject({
+      status: "interrupted",
+      record_count: 1,
+    });
+
+    adapter.failOnCall = null;
+    const resumed = await runMatrix({
+      runDir,
+      versions: ["anchor", "authored"],
+      hosts: ["codex"],
+      attemptId: "resumable",
+      concurrency: 1,
+      resume: true,
+      adapters: { codex: adapter },
+    } as any);
+
+    expect(resumed).toHaveLength(2);
+    expect(adapter.requests).toHaveLength(2);
+    expect(await readJson<any[]>(join(runDir, "executions.json"))).toHaveLength(2);
+    expect(await readJson<any[]>(join(runDir, "gradings.json"))).toHaveLength(2);
+    expect(await readJson<any>(join(runDir, "artifacts", "runs", "resumable", "attempt.json"))).toMatchObject({
+      status: "complete",
+      record_count: 2,
+    });
   });
 });

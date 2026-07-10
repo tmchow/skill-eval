@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { preflight } from "../skills/skill-eval/scripts/lib/preflight.ts";
+import { createCommandProbe, preflight } from "../skills/skill-eval/scripts/lib/preflight.ts";
 import type { CommandProbe } from "../skills/skill-eval/scripts/lib/types.ts";
 
 async function targetSkill(): Promise<string> {
@@ -35,6 +35,18 @@ function probe(overrides: Record<string, { exitCode: number; stdout?: string; st
 }
 
 describe("preflight", () => {
+  test("bounds dependency and host probes", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skill-eval-slow-probe-"));
+    const command = join(root, "slow");
+    await writeFile(command, "#!/bin/sh\nsleep 5\n");
+    await chmod(command, 0o755);
+
+    const result = await createCommandProbe(25)(command, []);
+
+    expect(result.exitCode).toBe(124);
+    expect(result.stderr).toContain("timed out");
+  });
+
   test("reports both authenticated hosts and native Claude capability", async () => {
     const report = await preflight(await targetSkill(), {
       invokingHost: "codex",
@@ -47,6 +59,20 @@ describe("preflight", () => {
     expect(report.hosts.claude.ready).toBe(true);
     expect(report.hosts.codex.ready).toBe(true);
     expect(report.hosts.claude.capabilities.native_plugin_eval).toBe(true);
+  });
+
+  test("resolves a bare skill name from the repository skills directory", async () => {
+    const target = await targetSkill();
+    const root = join(target, "..", "..");
+    const report = await preflight("demo", {
+      invokingHost: "codex",
+      requestedHosts: ["codex"],
+      probe: probe(),
+      cwd: root,
+    });
+
+    expect(report.ready).toBe(true);
+    expect(report.target_path).toBe(await realpath(target));
   });
 
   test("degrades when the secondary host is unavailable", async () => {
@@ -93,5 +119,16 @@ describe("preflight", () => {
     const report = await preflight(root, { invokingHost: "codex", requestedHosts: ["codex"], probe: probe() });
     expect(report.ready).toBe(false);
     expect(report.blocked.map((check) => check.id)).toContain("target.repository");
+  });
+
+  test("warns when an unreferenced evaluator specification could leak into executor context", async () => {
+    const target = await targetSkill();
+    await mkdir(join(target, "references"), { recursive: true });
+    await writeFile(join(target, "references", "cross-model-eval.md"), "# Expected evaluation cases\n");
+
+    const report = await preflight(target, { invokingHost: "codex", requestedHosts: ["codex"], probe: probe() });
+
+    expect(report.ready).toBe(true);
+    expect(report.degraded.find((item) => item.id === "target.evaluator-files")?.message).toContain("references/cross-model-eval.md");
   });
 });

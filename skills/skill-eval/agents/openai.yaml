@@ -1,4 +1,4 @@
 interface:
   display_name: "Skill Eval"
   short_description: "Cross-model skill evals with iterative autofixes"
-  default_prompt: "Evaluate the skill I am editing against its baseline, check regressions and triggering across available hosts, and promote only a demonstrated improvement."
+  default_prompt: "Evaluate my current skill change against the appropriate development baseline using only the evidence needed for the requested claim; improve or promote it only when requested."

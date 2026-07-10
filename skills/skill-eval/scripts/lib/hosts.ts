@@ -27,9 +27,10 @@ export function buildClaudeArgs(request: Pick<HostRequest, "finalPath" | "model"
   return [
     "--safe-mode",
     "--disable-slash-commands",
+    "--setting-sources", "",
     "--no-session-persistence",
     "--strict-mcp-config",
-    "--permission-mode", "bypassPermissions",
+    "--permission-mode", "auto",
     "--output-format", "stream-json",
     "--verbose",
     ...(request.model ? ["--model", request.model] : []),
@@ -114,11 +115,13 @@ function metricsFrom(events: Array<Record<string, any>>): NonNullable<HostResult
 async function execute(host: HostName, command: string, request: HostRequest, sourceCodexHome?: string): Promise<HostResult> {
   await mkdir(dirname(request.finalPath), { recursive: true });
   const args = host === "claude" ? buildClaudeArgs(request) : buildCodexArgs(request);
+  const executable = command.includes("/") ? command : Bun.which(command) ?? command;
   const isolated = host === "codex" && !request.env?.CODEX_HOME ? await createIsolatedCodexHome(sourceCodexHome) : null;
   try {
+    // The inherited marker blocks nested startup; the child restores CLAUDECODE=1 for its own tools.
     const hostEnv = { ...request.env, ...(isolated ? { CODEX_HOME: isolated.path } : {}), ...(host === "claude" ? { CLAUDECODE: undefined } : {}) };
     const processResult = await runProcess({
-      command,
+      command: executable,
       args,
       cwd: request.cwd,
       input: request.prompt,
@@ -150,7 +153,7 @@ async function execute(host: HostName, command: string, request: HostRequest, so
       event_path: request.eventPath,
       stderr_path: request.stderrPath,
       final_path: request.finalPath,
-      command,
+      command: executable,
       args,
       model: request.model ?? null,
       metrics: metricsFrom(parsed.events),

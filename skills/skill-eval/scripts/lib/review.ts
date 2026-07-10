@@ -1,12 +1,9 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
+import { escapeHtml as escape } from "./html.ts";
 import { readJson } from "./json.ts";
 import type { HostName, JudgeResult } from "./types.ts";
-
-function escape(value: unknown): string {
-  return String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
-}
 
 const textExtensions = new Set([".txt", ".md", ".json", ".csv", ".ts", ".tsx", ".js", ".jsx", ".py", ".sh", ".yaml", ".yml", ".xml", ".html", ".css", ".toml", ".sql"]);
 const imageMimes: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml" };
@@ -166,7 +163,12 @@ export async function generateReview(runDirInput: string, outputPath?: string, i
   const runDir = resolve(runDirInput);
   const judgments = await readJson<JudgeResult[]>(join(runDir, "judgments.json"));
   const groups = new Map<string, JudgeResult[]>();
-  for (const judgment of judgments) groups.set(groupKey(judgment), [...(groups.get(groupKey(judgment)) ?? []), judgment]);
+  for (const judgment of judgments) {
+    const key = groupKey(judgment);
+    const group = groups.get(key);
+    if (group) group.push(judgment);
+    else groups.set(key, [judgment]);
+  }
   const disputed = [...groups.values()].filter((items) => includeAll || items.some((item) => !item.valid) || new Set(items.map((item) => item.preferred_version)).size > 1);
   let benchmark: any = null;
   try { benchmark = await readJson(join(runDir, "benchmark.json")); } catch { /* review can run before aggregation */ }
@@ -191,8 +193,10 @@ export async function generateReview(runDirInput: string, outputPath?: string, i
     caseButtons.push(`<button class="case-tab" data-case="${caseId}" data-title="${escape(first.eval_id)}" data-meta="${escape(`${first.executor_host} executor / repetition ${first.repetition}`)}" aria-selected="${index === 0}"><span>Review case ${index + 1}</span><strong>${escape(first.eval_id)}</strong></button>`);
 
     const input = join(first.run_dir, "input");
-    const outputA = await renderArtifacts(join(input, "A"), "A", caseId);
-    const outputB = await renderArtifacts(join(input, "B"), "B", caseId);
+    const [outputA, outputB] = await Promise.all([
+      renderArtifacts(join(input, "A"), "A", caseId),
+      renderArtifacts(join(input, "B"), "B", caseId),
+    ]);
     const strengthsA = renderSignals(items, first, "A", "strengths");
     const strengthsB = renderSignals(items, first, "B", "strengths");
     const weaknessesA = renderSignals(items, first, "A", "weaknesses");

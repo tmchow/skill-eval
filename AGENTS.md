@@ -16,6 +16,8 @@ This is a single-package repository. `AGENTS.md` is the canonical repository ins
 - `tests/`: Bun tests for behavior, integrity boundaries, packaging, and CLI contracts.
 - `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/`: Claude and Codex plugin and marketplace metadata.
 - `docs/plans/`: design and implementation records.
+- `docs/solutions/`: searchable architecture and workflow learnings, organized by category with YAML frontmatter.
+- `CONCEPTS.md`: shared vocabulary for evaluation evidence, lifecycle, and promotion concepts.
 
 ## Setup And Validation
 

@@ -65,6 +65,9 @@ printf '%s\\n' '{"type":"turn.completed"}'
 
     expect(claude).toContain("--safe-mode");
     expect(claude).toContain("--disable-slash-commands");
+    expect(claude[claude.indexOf("--setting-sources") + 1]).toBe("");
+    expect(claude[claude.indexOf("--permission-mode") + 1]).toBe("auto");
+    expect(claude).not.toContain("bypassPermissions");
     expect(claude).toContain("stream-json");
     expect(claude).toContain("claude-test");
     expect(codex).toContain("--ephemeral");

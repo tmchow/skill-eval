@@ -19,8 +19,8 @@ The default evaluation runs Claude and Codex when both are installed. Cross-harn
 
 ## Version Terms
 
-- **Anchor baseline:** the fixed comparison captured at run start: `HEAD` for a tracked revision or no skill for a new skill.
-- **Authored candidate:** the user's working-tree skill at run start.
+- **Anchor baseline:** the fixed comparison captured at run start: `HEAD` for local edits, a resolved merge base or explicit ref for branch/PR work, or no skill when the target is absent there.
+- **Authored candidate:** the user's complete skill directory at run start, including committed and uncommitted changes.
 - **Incumbent:** the best skill version found so far; initially the authored candidate after it is measured against the anchor baseline.
 - **Challenger:** the single evidence-driven revision proposed in an optimization iteration.
 
@@ -89,8 +89,11 @@ The current Claude or Codex agent is the intelligent orchestrator. The shared en
 - Capture JSONL events, final messages, outputs, timings, tokens, and errors.
 - Enforce schemas and source hashes.
 - Run deterministic checks and aggregate statistics.
+- Run frozen bundled-script contracts as model-free evidence.
+- Persist and grade each completed behavior run before proceeding.
+- Resume matching incomplete attempts at individual-run granularity.
 - Randomize blind-comparison labels.
-- Store run artifacts and serve the optional review UI.
+- Expose cheap durable status and serve the optional review UI.
 - Apply the promoted winner safely.
 
 The engine never decides which qualitative output is better and never authors skill changes.
@@ -116,7 +119,7 @@ Before model calls, show a concise, decision-relevant summary. It states:
 - how the evals will prove the intended improvement;
 - the shape of regression and trigger coverage;
 - which harnesses are available;
-- a practical time/call estimate;
+- the planned direct call count and, only after calibration, an evidence-based time/token/cost range;
 - what promotion may change.
 
 Do not expose the internal matrix, model identifiers, fixture mechanics, or every preflight check unless an exception affects the decision.
@@ -129,7 +132,7 @@ Example:
 >
 > **How I'll prove it:** targeted cases where the committed skill takes the old shortcut, plus regression coverage for the normal path, explicit opt-in, related router handoff, and Claude/Codex triggering.
 >
-> I'll compare the working version against `HEAD` across both available harnesses and try up to five evidence-driven revisions. This may take 20-40 minutes. A winner must demonstrate the intended improvement without a critical regression.
+> I'll compare the complete current skill against the selected baseline across both available harnesses. The first bounded pass is one repetition; I will use its observed duration and token data before estimating any larger run. A winner must demonstrate the intended improvement without a critical regression.
 >
 > Start the evaluation?
 
@@ -169,7 +172,7 @@ The invoking harness is required. The other harness is optional: its absence mar
 
 ## Baseline Selection
 
-For a tracked revision, capture the target skill at `HEAD` as the anchor baseline and compare the authored working-tree candidate against it. Allow explicit Git-ref and path overrides.
+For local edits, capture the target skill at `HEAD`. For branch or PR evaluation, capture it at the resolved merge base with the base ref. Allow an explicit ref override. In every case, compare that anchor with the complete current target directory so committed and uncommitted work are evaluated together.
 
 For a new or untracked skill with no prior version, compare against a no-skill baseline.
 
@@ -177,9 +180,9 @@ Snapshot anchor-baseline and authored-candidate bytes before the run. The engine
 
 ## Impact Mapping And Eval Creation
 
-Eval creation begins from the changed mechanism, not the visible bug or a collection of prompt paraphrases.
+Eval creation begins from the complete behavioral delta, not the visible bug, a PR summary, an authored eval spec, or a collection of prompt paraphrases. Narrative artifacts and existing tests/evals are candidate evidence, not scope authority.
 
-For revisions, inspect the working-tree diff and establish:
+For revisions, inspect the complete anchor-to-authored diff and establish:
 
 - the intended behavior change;
 - changed routing, gates, completion contracts, reference loading, output formats, tool calls, portability, or validation;
@@ -189,9 +192,11 @@ For revisions, inspect the working-tree diff and establish:
 - emitted files, schemas, menus, handoffs, and side effects;
 - neighboring behavior expected to remain stable.
 
+Trace each changed mechanism through callers, immediate output effects, and handoffs to the terminal benefit for the user or downstream consumer. Do not stop at presence, provenance, promotion, or formatting of the new mechanism's output unless the user explicitly asked to evaluate that effect. If the mechanism exists to improve output quality or usefulness, that terminal outcome is the primary claim; mechanism engagement is supporting evidence and unchanged behavior supplies regression claims. The plan is incomplete unless an outcome case could fail while the mechanism works correctly. Deterministic checks prove wiring while paired blind comparison proves a quality delta; stochastic quality is not replaced by a cheaper deterministic proxy. A stub may test routing or fallback, but it cannot replace the component claimed to create the outcome benefit.
+
 Build a branch matrix from that impact map. Consider default, opt-in, skip/default-closed, unsupported/unavailable, exception, user-says-only, ambiguous-input, and format/mode paths when they are relevant.
 
-Create the smallest nonredundant eval set that covers every material boundary. Each case should prove one boundary and have one of these purposes:
+Create the smallest nonredundant eval set that covers every material boundary and required claim layer. Minimize within mechanism, outcome, and regression evidence rather than dropping the outcome to save calls. Use the narrowest execution boundary that preserves the causal link; unrelated workflow may be short-circuited. Each case should prove one boundary and have one of these purposes:
 
 - `improvement`: old behavior should fail or take the known shortcut while the evaluated version succeeds;
 - `regression`: behavior outside the intended change must remain stable;
@@ -246,11 +251,13 @@ The revision agent receives training failures and generalized takeaways, not hel
 
 Do not store generated evals inside the target skill. That would distribute authoring debris and could leak expected behavior to executors.
 
+Preflight identifies likely unreferenced evaluator specifications already present in a target. The orchestrator classifies them before preparation: runtime references stay; confirmed answer keys remain in the frozen source hash but are excluded from executor copies and recorded in `run.json`.
+
 Persist only calibrated, reusable suites under the target repository's `.skill-eval/<skill-name>/`. Executors never receive `.skill-eval/`. Complete run artifacts live under `/tmp/skill-eval/<skill-name>/<run-id>/`.
 
 ## Behavioral Execution Matrix
 
-The initial behavioral pass runs a full matrix when both harnesses are available:
+The initial behavioral pass runs the smallest approved paired matrix. Available secondary hosts add portability coverage when the claim needs it; they do not automatically expand a bounded calibration:
 
 | Executor | Anchor baseline | Authored candidate |
 |---|---:|---:|
@@ -259,9 +266,15 @@ The initial behavioral pass runs a full matrix when both harnesses are available
 
 Each optimization iteration uses the same shape with incumbent and challenger. Preserve the fixed anchor results for absolute value and regression comparison. Rerun the anchor whenever the eval or fixture changes; otherwise reuse its frozen-run evidence rather than spending calls without changing the tested contract.
 
+Evaluation and promotion are separate contracts. `compare` runs approved training evidence, grades it, performs blind paired judgment when needed, and produces a non-sealed benchmark. It is the default for calibration and evaluation-only requests. `certify` is promotion-grade: it fails before any model call unless both training and held-out behavior cases exist, then seals the complete result for promotion.
+
+The engine remains a synchronous, re-runnable process rather than a daemon. Claude Code launches long work through native background Bash; Codex keeps it in a persistent exec session. Both read progress through a model-free `status` command. Each completed run and deterministic grade is written atomically, so interruption loses only in-flight work and resume executes only missing runs. Executor, grader, judge, and reviser timeouts are independent; an executor timeout is inconclusive evidence.
+
 Use one run per configuration initially. Expand ambiguous, conflicting, or near-threshold cases to three runs. Keep prompts, fixtures, permissions, and declared related skills identical within a case.
 
 Behavioral runs receive the exact skill path explicitly, bypassing installed-skill caches. They do not test discovery.
+
+Pure bundled-script contracts use a separate frozen `check-script` path with no model call. Results enter `script-checks.json` with arguments, stdout/stderr, timeout, exit status, and mutation detection. These checks establish supporting mechanics only; they never substitute for the paired user-visible outcome when the change claims one.
 
 ## Trigger Evaluation
 
@@ -344,10 +357,10 @@ The engine must:
 - prevent source-repository writes by executors and judges;
 - redact secrets from stored event streams where feasible;
 - use bounded concurrency;
-- time out hung processes;
-- retain partial artifacts after interruption;
+- apply phase-specific timeouts to hung processes;
+- retain and grade completed runs after interruption;
 - treat malformed or incomplete host output as a failed run, not a passing omission;
-- preserve enough state to diagnose or resume a run without reusing contaminated executor workspaces.
+- preserve enough state to diagnose or resume only missing runs without reusing contaminated executor workspaces.
 
 ## Promotion And Git Behavior
 
@@ -406,7 +419,7 @@ The initial release is complete when:
 
 1. The same installed `skill-eval` workflow runs from Claude Code and Codex.
 2. Either host can launch fresh local runs on both available harnesses without installing the target skill.
-3. A revised tracked skill uses `HEAD` as a fixed anchor baseline; a new skill uses no skill.
+3. A local revision uses `HEAD`, branch/PR work uses its merge base or explicit ref, and a target absent at the selected baseline uses no skill.
 4. Agent-designed fixtures are frozen and copied identically across the matrix.
 5. Before confirmation, the proposed eval plan covers intended improvement and a justified regression envelope; after confirmation, the generated suite is calibrated and frozen before optimization.
 6. Mechanical and dual blind qualitative grading produce auditable artifacts.

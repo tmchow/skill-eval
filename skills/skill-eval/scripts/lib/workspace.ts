@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, realpath, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { copyTree, containedPath, hashTree, hashValue, readJson, writeJson } from "./json.ts";
-import { readSkill } from "./skill.ts";
+import { copyTree, containedPath, hashTree, hashValue, readJson, reserveArtifactDir, writeJson } from "./json.ts";
+import { findPotentialEvaluatorFiles, readSkill, resolveSkillTarget } from "./skill.ts";
 import { validateSuite } from "./suite.ts";
+import { registerCampaignRun, validateCampaignRole, validateCampaignTarget } from "./campaign.ts";
 import type { EvalSuite, PrepareRunOptions, RunState } from "./types.ts";
 
 function runGit(cwd: string, args: string[], allowFailure = false): { exitCode: number; stdout: Buffer; stderr: Buffer } {
@@ -12,8 +13,18 @@ function runGit(cwd: string, args: string[], allowFailure = false): { exitCode: 
   return { exitCode: result.exitCode, stdout: Buffer.from(result.stdout), stderr: Buffer.from(result.stderr) };
 }
 
-async function extractHeadTree(repoRoot: string, relativeTarget: string, destination: string): Promise<boolean> {
-  const listing = runGit(repoRoot, ["ls-tree", "-r", "-z", "HEAD", "--", relativeTarget], true);
+function resolveCommit(repoRoot: string, ref: string): string | null {
+  const result = runGit(repoRoot, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], true);
+  return result.exitCode === 0 ? result.stdout.toString().trim() : null;
+}
+
+function treeContainsTarget(repoRoot: string, commit: string, relativeTarget: string): boolean {
+  const listing = runGit(repoRoot, ["ls-tree", "-r", "-z", commit, "--", relativeTarget], true);
+  return listing.exitCode === 0 && listing.stdout.length > 0;
+}
+
+async function extractTreeAtRef(repoRoot: string, commit: string, relativeTarget: string, destination: string): Promise<boolean> {
+  const listing = runGit(repoRoot, ["ls-tree", "-r", "-z", commit, "--", relativeTarget], true);
   if (listing.exitCode !== 0 || listing.stdout.length === 0) return false;
   const entries = listing.stdout.toString().split("\0").filter(Boolean);
   for (const entry of entries) {
@@ -24,7 +35,7 @@ async function extractHeadTree(repoRoot: string, relativeTarget: string, destina
     if (relativeFile.startsWith("..")) continue;
     const outputPath = join(destination, relativeFile);
     await mkdir(dirname(outputPath), { recursive: true });
-    const contents = runGit(repoRoot, ["show", `HEAD:${path}`]).stdout;
+    const contents = runGit(repoRoot, ["show", `${commit}:${path}`]).stdout;
     if (mode === "120000") await symlink(contents.toString(), outputPath);
     else {
       await writeFile(outputPath, contents);
@@ -35,26 +46,47 @@ async function extractHeadTree(repoRoot: string, relativeTarget: string, destina
 }
 
 export async function prepareRun(options: PrepareRunOptions): Promise<RunState> {
-  const targetPath = await realpath(resolve(options.targetPath));
+  const targetPath = await resolveSkillTarget(options.targetPath, options.cwd);
   const suitePath = await realpath(resolve(options.suitePath));
   const suite = validateSuite(await readJson<unknown>(suitePath));
   const skill = await readSkill(targetPath);
   if (suite.skill_name !== skill.name) throw new Error(`suite skill_name ${suite.skill_name} does not match target ${skill.name}`);
+  if ((options.campaignDir === undefined) !== (options.campaignRole === undefined)) throw new Error("prepare requires both campaignDir and campaignRole");
+  if (options.campaignDir) {
+    await validateCampaignTarget(options.campaignDir, targetPath, skill.name);
+    validateCampaignRole(options.campaignRole!);
+  }
   const repoResult = runGit(targetPath, ["rev-parse", "--show-toplevel"]);
   const repoRoot = await realpath(repoResult.stdout.toString().trim());
-  const relativeTarget = relative(repoRoot, targetPath).split("\\").join("/");
+  const relativeTarget = relative(repoRoot, targetPath).replaceAll("\\", "/");
   if (!relativeTarget || relativeTarget.startsWith("..")) throw new Error("target must be inside its Git repository");
+  const potentialEvaluatorFiles = new Set(await findPotentialEvaluatorFiles(targetPath));
+  const executorExclusions = [...new Set(options.executorExclusions ?? [])].map((path) => path.replaceAll("\\", "/"));
+  for (const path of executorExclusions) {
+    if (path === "SKILL.md") throw new Error("cannot exclude SKILL.md from executor snapshots");
+    if (!potentialEvaluatorFiles.has(path)) throw new Error(`executor exclusion is not an unreferenced evaluator file: ${path}`);
+    const absolute = containedPath(targetPath, path);
+    if (!(await stat(absolute)).isFile()) throw new Error(`executor exclusion is not a file: ${path}`);
+  }
   const runId = options.runId ?? `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
   const runRoot = resolve(options.runRoot ?? join("/tmp", "skill-eval", skill.name));
   const runDir = join(runRoot, runId);
+  await reserveArtifactDir(runDir);
   await mkdir(join(runDir, "versions"), { recursive: true });
   await mkdir(join(runDir, "fixtures"), { recursive: true });
 
   const authoredPath = join(runDir, "versions", "authored");
   await copyTree(targetPath, authoredPath);
   const anchorPath = join(runDir, "versions", "anchor");
-  const targetTracked = await extractHeadTree(repoRoot, relativeTarget, anchorPath);
-  const anchor = targetTracked ? { kind: "git" as const, ref: "HEAD" } : { kind: "none" as const };
+  const requestedAnchorRef = options.anchorRef ?? "HEAD";
+  const anchorCommit = resolveCommit(repoRoot, requestedAnchorRef);
+  if (!anchorCommit && options.anchorRef) throw new Error(`anchor ref does not resolve to a commit: ${requestedAnchorRef}`);
+  const headCommit = resolveCommit(repoRoot, "HEAD");
+  const targetTracked = headCommit ? treeContainsTarget(repoRoot, headCommit, relativeTarget) : false;
+  const anchorExists = anchorCommit ? await extractTreeAtRef(repoRoot, anchorCommit, relativeTarget, anchorPath) : false;
+  const anchor = anchorExists
+    ? { kind: "git" as const, ref: requestedAnchorRef, commit: anchorCommit! }
+    : { kind: "none" as const, ref: requestedAnchorRef, ...(anchorCommit ? { commit: anchorCommit } : {}) };
 
   const fixtureHashes: Record<string, string> = {};
   const suiteDirectory = dirname(suitePath);
@@ -90,14 +122,16 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
     invoking_host: options.invokingHost,
     requested_hosts: [...new Set(options.hosts)],
     host_metadata: hostMetadata,
+    executor_exclusions: executorExclusions,
+    ...(options.campaignDir ? { campaign: { campaign_dir: resolve(options.campaignDir), role: options.campaignRole! } } : {}),
     anchor,
     versions: {
       authored: { path: authoredPath, parent: null, created_at: createdAt },
-      ...(targetTracked ? { anchor: { path: anchorPath, parent: null, created_at: createdAt } } : {}),
+      ...(anchorExists ? { anchor: { path: anchorPath, parent: null, created_at: createdAt } } : {}),
     },
     hashes: {
       versions: {
-        anchor: targetTracked ? await hashTree(anchorPath) : null,
+        anchor: anchorExists ? await hashTree(anchorPath) : null,
         authored: await hashTree(authoredPath),
       },
       fixtures: fixtureHashes,
@@ -112,6 +146,7 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
     },
   };
   await writeJson(join(runDir, "run.json"), state);
+  if (options.campaignDir) await registerCampaignRun(options.campaignDir, { runDir, role: options.campaignRole! });
   return state;
 }
 

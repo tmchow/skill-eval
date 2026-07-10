@@ -1,28 +1,36 @@
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { assertWritableDirectory } from "./json.ts";
-import { readSkill } from "./skill.ts";
+import { terminateProcessTree } from "./process.ts";
+import { findPotentialEvaluatorFiles, readSkill, resolveSkillTarget } from "./skill.ts";
 import type { CommandProbe, HostName, HostReadiness, PreflightCheck, PreflightReport } from "./types.ts";
 
 export interface PreflightOptions {
   invokingHost: HostName;
   requestedHosts: HostName[];
   probe?: CommandProbe;
+  probeTimeoutMs?: number;
+  cwd?: string;
 }
 
-const defaultProbe: CommandProbe = async (command, args) => {
+export function createCommandProbe(timeoutMs: number): CommandProbe {
+  return async (command, args) => {
   try {
-    const process = Bun.spawn([command, ...args], { stdout: "pipe", stderr: "pipe" });
+    const processHandle = Bun.spawn([command, ...args], { detached: process.platform !== "win32", stdout: "pipe", stderr: "pipe" });
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; terminateProcessTree(processHandle); }, timeoutMs);
     const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(process.stdout).text(),
-      new Response(process.stderr).text(),
-      process.exited,
+      new Response(processHandle.stdout).text(),
+      new Response(processHandle.stderr).text(),
+      processHandle.exited,
     ]);
-    return { exitCode, stdout, stderr };
+    clearTimeout(timer);
+    return timedOut ? { exitCode: 124, stdout, stderr: stderr || `probe timed out after ${timeoutMs}ms` } : { exitCode, stdout, stderr };
   } catch (error) {
     return { exitCode: 127, stdout: "", stderr: error instanceof Error ? error.message : String(error) };
   }
-};
+  };
+}
 
 function check(id: string, status: PreflightCheck["status"], message: string, remediation?: string): PreflightCheck {
   return { id, status, message, ...(remediation ? { remediation } : {}) };
@@ -80,12 +88,21 @@ async function hostReadiness(host: HostName, probe: CommandProbe): Promise<{ rea
 }
 
 export async function preflight(targetPath: string, options: PreflightOptions): Promise<PreflightReport> {
-  const probe = options.probe ?? defaultProbe;
+  const probe = options.probe ?? createCommandProbe(options.probeTimeoutMs ?? 10_000);
   const checks: PreflightCheck[] = [];
   let skillName: string | null = null;
+  let resolvedTarget = resolve(options.cwd ?? process.cwd(), targetPath);
   try {
-    skillName = (await readSkill(targetPath)).name;
+    resolvedTarget = await resolveSkillTarget(targetPath, options.cwd);
+    skillName = (await readSkill(resolvedTarget)).name;
     checks.push(check("target.skill", "ready", `valid skill: ${skillName}`));
+    const evaluatorFiles = await findPotentialEvaluatorFiles(resolvedTarget);
+    if (evaluatorFiles.length > 0) checks.push(check(
+      "target.evaluator-files",
+      "degraded",
+      `possible evaluator-only files would be visible to executors: ${evaluatorFiles.join(", ")}`,
+      "Confirm whether each file is runtime material; exclude evaluator-only paths during prepare",
+    ));
   } catch (error) {
     checks.push(check("target.skill", "blocked", error instanceof Error ? error.message : String(error)));
   }
@@ -98,7 +115,7 @@ export async function preflight(targetPath: string, options: PreflightOptions): 
     ? check("dependency.git", "ready", git.stdout.trim())
     : check("dependency.git", "blocked", "Git is required", "Install Git with the operating system package manager"));
   if (git.exitCode === 0) {
-    const repository = await probe("git", ["-C", resolve(targetPath), "rev-parse", "--show-toplevel"]);
+    const repository = await probe("git", ["-C", resolvedTarget, "rev-parse", "--show-toplevel"]);
     checks.push(repository.exitCode === 0
       ? check("target.repository", "ready", `Git repository: ${repository.stdout.trim()}`)
       : check("target.repository", "blocked", "target skill must be inside a Git repository"));
@@ -134,7 +151,7 @@ export async function preflight(targetPath: string, options: PreflightOptions): 
     ready,
     coverage: ready ? (degraded.length > 0 ? "degraded" : "full") : "blocked",
     invoking_host: options.invokingHost,
-    target_path: resolve(targetPath),
+    target_path: resolvedTarget,
     skill_name: skillName,
     hosts,
     checks,

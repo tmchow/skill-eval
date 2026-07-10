@@ -3,7 +3,9 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createIsolatedCodexHome } from "./hosts.ts";
 import { copyTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
-import { redactSecrets, terminateProcessTree } from "./process.ts";
+import { environment, redactSecrets, terminateProcessTree } from "./process.ts";
+import { createOperation } from "./operations.ts";
+import type { OperationLimits, OperationTracker } from "./operations.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
 import type { EvidencePartition, HostName, TriggerResult } from "./types.ts";
 
@@ -30,6 +32,9 @@ export interface TriggerSuiteOptions {
   queryIds?: string[];
   concurrency?: number;
   models?: Partial<Record<HostName, string>>;
+  operation?: OperationTracker;
+  limits?: OperationLimits;
+  resume?: boolean;
 }
 
 function createAttemptId(value?: string): string {
@@ -38,16 +43,23 @@ function createAttemptId(value?: string): string {
   return id;
 }
 
+function triggerKey(value: Pick<TriggerResult, "host" | "query_id" | "version" | "repetition">): string {
+  return `${value.host}\0${value.query_id}\0${value.version}\0${value.repetition}`;
+}
+
 async function mapLimit<T, R>(items: T[], limit: number, operation: (item: T) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);
   let cursor = 0;
+  let failure: unknown;
   async function worker(): Promise<void> {
-    while (cursor < items.length) {
+    while (cursor < items.length && failure === undefined) {
       const index = cursor++;
-      results[index] = await operation(items[index]!);
+      try { results[index] = await operation(items[index]!); }
+      catch (error) { failure ??= error; }
     }
   }
   await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, () => worker()));
+  if (failure !== undefined) throw failure;
   return results;
 }
 
@@ -90,14 +102,12 @@ interface TriggerProcessRequest {
 }
 
 async function runUntilTrigger(request: TriggerProcessRequest): Promise<{ exitCode: number; triggered: boolean; timedOut: boolean; stderr: string }> {
-  const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries({ ...process.env, ...request.env })) if (value !== undefined) env[key] = value;
   let processHandle: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
     processHandle = Bun.spawn([request.command, ...request.args], {
       cwd: request.cwd,
       detached: process.platform !== "win32",
-      env,
+      env: environment(request.env),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -216,7 +226,6 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   const id = createAttemptId(options.attemptId);
   let previous: TriggerResult[] = [];
   try { previous = await readJson<TriggerResult[]>(join(runDir, "triggers.json")); } catch { /* first trigger run */ }
-  if (previous.some((record) => record.attempt_id === id)) throw new Error(`attempt id already exists: ${id}`);
   const probe = options.probe ?? defaultTriggerProbe;
   const partition = options.partition ?? "training";
   const queries = (suite.trigger_queries ?? []).filter((query) => {
@@ -234,22 +243,58 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
     }
   }
   const attemptRoot = join(runDir, "artifacts", "triggers", id);
-  await reserveArtifactDir(attemptRoot);
   const manifestPath = join(attemptRoot, "attempt.json");
   const manifest = {
     schema_version: 1, attempt_id: id, kind: "trigger", status: "started", created_at: new Date().toISOString(),
     partition, version: options.version, hosts: [...options.hosts], query_ids: queries.map((item) => item.id),
     repetitions: options.repetitions ?? 3, planned_records: tasks.length,
   };
-  await writeJson(manifestPath, manifest);
-  const results = await mapLimit(tasks, options.concurrency ?? 6, async ({ query, host, repetition }): Promise<TriggerResult> => {
-    const workDir = join(runDir, "artifacts", "triggers", id, options.version, host, query.id, `run-${repetition}`);
-    const outcome = await probe(host, { query: query.query, skillName: state.skill_name, skillPath: version.path, workDir, timeoutMs: options.timeoutMs ?? 60_000, model: options.models?.[host] });
-    return { schema_version: 1, attempt_id: id, partition: query.holdout ? "holdout" : "training", created_at: new Date().toISOString(), host, version: options.version, query_id: query.id, should_trigger: query.should_trigger, repetition, ...outcome };
-  });
-  await writeJson(join(runDir, "triggers.json"), [...previous, ...results]);
-  await writeJson(manifestPath, { ...manifest, status: "complete", completed_at: new Date().toISOString(), record_count: results.length });
-  return results;
+  if (await Bun.file(manifestPath).exists()) {
+    if (!options.resume) throw new Error(`attempt id already exists: ${id}`);
+    const existing = await readJson<typeof manifest & { status: string }>(manifestPath);
+    for (const key of ["partition", "version", "hosts", "query_ids", "repetitions", "planned_records"] as const) {
+      if (JSON.stringify(existing[key]) !== JSON.stringify(manifest[key])) throw new Error(`cannot resume trigger attempt ${id}: ${key} changed`);
+    }
+  } else {
+    if (previous.some((record) => record.attempt_id === id)) throw new Error(`trigger attempt ${id} has records but no manifest`);
+    await reserveArtifactDir(attemptRoot);
+    await writeJson(manifestPath, manifest);
+  }
+  const attemptRecords = new Map(previous.filter((item) => item.attempt_id === id).map((item) => [triggerKey(item), item]));
+  const remaining = tasks.filter((task) => !attemptRecords.has(triggerKey({ host: task.host, query_id: task.query.id, version: options.version, repetition: task.repetition })));
+  const ownedOperation = options.operation ? null : await createOperation(runDir, { kind: "trigger", phase: `${partition} queries`, planned_units: remaining.length, limits: options.limits });
+  const operation = options.operation ?? ownedOperation!;
+  let persistence = Promise.resolve();
+  async function persistResult(result: TriggerResult): Promise<void> {
+    const write = persistence.then(async () => {
+      attemptRecords.set(triggerKey(result), result);
+      previous = previous.filter((item) => item.attempt_id !== id || triggerKey(item) !== triggerKey(result));
+      previous.push(result);
+      await writeJson(join(runDir, "triggers.json"), previous);
+      await writeJson(manifestPath, { ...manifest, status: "started", record_count: attemptRecords.size });
+    });
+    persistence = write.catch(() => {});
+    await write;
+  }
+  try {
+    await mapLimit(remaining, options.concurrency ?? 6, async ({ query, host, repetition }): Promise<TriggerResult> => {
+      const remaining = await operation.beginModelCall();
+      const workDir = join(runDir, "artifacts", "triggers", id, options.version, host, query.id, `run-${repetition}`);
+      const outcome = await probe(host, { query: query.query, skillName: state.skill_name, skillPath: version.path, workDir, timeoutMs: Math.min(options.timeoutMs ?? 60_000, remaining), model: options.models?.[host] });
+      await operation.finishModelCall();
+      const result: TriggerResult = { schema_version: 1, attempt_id: id, partition: query.holdout ? "holdout" : "training", created_at: new Date().toISOString(), host, version: options.version, query_id: query.id, should_trigger: query.should_trigger, repetition, ...outcome };
+      await persistResult(result);
+      return result;
+    });
+    const results = tasks.map((task) => attemptRecords.get(triggerKey({ host: task.host, query_id: task.query.id, version: options.version, repetition: task.repetition }))!);
+    await writeJson(manifestPath, { ...manifest, status: "complete", completed_at: new Date().toISOString(), record_count: results.length });
+    await ownedOperation?.complete("trigger suite complete");
+    return results;
+  } catch (error) {
+    await writeJson(manifestPath, { ...manifest, status: "interrupted", interrupted_at: new Date().toISOString(), record_count: attemptRecords.size });
+    await ownedOperation?.fail(error);
+    throw error;
+  }
 }
 
 export function summarizeTriggers(results: TriggerResult[]) {
@@ -279,4 +324,33 @@ export function summarizeTriggers(results: TriggerResult[]) {
     stability: queries.length > 0 ? queries.filter((item) => item.stable).length / queries.length : null,
     queries,
   };
+}
+
+export interface CrossHostTriggerSummary {
+  hosts: Record<string, { accuracy: number | null; stability: number | null }>;
+  disagreements: Array<{
+    query_id: string;
+    hosts: Record<string, { trigger_rate: number; passed: boolean; stable: boolean }>;
+  }>;
+}
+
+export function summarizeCrossHostTriggers(results: TriggerResult[]): CrossHostTriggerSummary {
+  const hostNames = [...new Set(results.map((item) => item.host))];
+  const hosts = Object.fromEntries(hostNames.map((host) => {
+    const summary = summarizeTriggers(results.filter((item) => item.host === host));
+    return [host, { accuracy: summary.accuracy, stability: summary.stability }];
+  }));
+  const queryIds = [...new Set(results.map((item) => item.query_id))];
+  const disagreements: CrossHostTriggerSummary["disagreements"] = [];
+  for (const queryId of queryIds) {
+    const byHost = Object.fromEntries(hostNames.flatMap((host) => {
+      const items = results.filter((item) => item.host === host && item.query_id === queryId);
+      if (items.length === 0) return [];
+      const triggerRate = items.filter((item) => item.triggered).length / items.length;
+      const shouldTrigger = items[0]!.should_trigger;
+      return [[host, { trigger_rate: triggerRate, passed: shouldTrigger ? triggerRate >= 0.5 : triggerRate < 0.5, stable: triggerRate === 0 || triggerRate === 1 }]];
+    }));
+    if (new Set(Object.values(byHost).map((item) => item.passed)).size > 1) disagreements.push({ query_id: queryId, hosts: byHost });
+  }
+  return { hosts, disagreements };
 }

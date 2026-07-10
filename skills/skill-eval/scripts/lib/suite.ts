@@ -5,7 +5,8 @@ const purposes = new Set<Purpose>(["improvement", "regression", "restraint", "fa
 const severities = new Set<Severity>(["critical", "quality", "diagnostic"]);
 const checkTypes = new Set([
   "file_exists", "file_not_exists", "file_contains", "file_not_contains",
-  "json_pointer_equals", "final_contains", "final_not_contains", "exit_success",
+  "json_pointer_equals", "final_contains", "final_not_contains",
+  "tool_called", "tool_not_called", "tool_call_count", "exit_success",
 ]);
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -18,14 +19,21 @@ function text(value: unknown, label: string): string {
   return value;
 }
 
+function identifier(value: unknown, label: string): string {
+  const id = text(value, label);
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new Error(`${label} must use letters, digits, dot, underscore, or hyphen`);
+  return id;
+}
+
 function validateCheck(value: unknown, label: string): DeterministicCheck | undefined {
   if (value === undefined) return undefined;
   const check = object(value, label);
   const type = text(check.type, `${label}.type`);
   if (!checkTypes.has(type)) throw new Error(`${label}.type is unsupported: ${type}`);
   if (type.includes("file") || type === "json_pointer_equals") text(check.path, `${label}.path`);
-  if (["file_contains", "file_not_contains", "final_contains", "final_not_contains"].includes(type)) text(check.value, `${label}.value`);
+  if (["file_contains", "file_not_contains", "final_contains", "final_not_contains", "tool_called", "tool_not_called", "tool_call_count"].includes(type)) text(check.value, `${label}.value`);
   if (type === "json_pointer_equals") text(check.pointer, `${label}.pointer`);
+  if (type === "tool_call_count" && (!Number.isInteger(check.count) || (check.count as number) < 0)) throw new Error(`${label}.count must be a non-negative integer`);
   return check as DeterministicCheck;
 }
 
@@ -34,7 +42,7 @@ function validateExpectation(value: unknown, evalId: string, index: number): Exp
   const severity = text(expectation.severity, `eval ${evalId} expectation ${index}.severity`) as Severity;
   if (!severities.has(severity)) throw new Error(`eval ${evalId} expectation ${index} has invalid severity`);
   return {
-    id: text(expectation.id, `eval ${evalId} expectation ${index}.id`),
+    id: identifier(expectation.id, `eval ${evalId} expectation ${index}.id`),
     text: text(expectation.text, `eval ${evalId} expectation ${index}.text`),
     severity,
     check: validateCheck(expectation.check, `eval ${evalId} expectation ${index}.check`),
@@ -43,7 +51,7 @@ function validateExpectation(value: unknown, evalId: string, index: number): Exp
 
 function validateEval(value: unknown, index: number): EvalCase {
   const evalCase = object(value, `eval ${index}`);
-  const id = text(evalCase.id, `eval ${index}.id`);
+  const id = identifier(evalCase.id, `eval ${index}.id`);
   const purpose = text(evalCase.purpose, `eval ${id}.purpose`) as Purpose;
   const severity = text(evalCase.severity, `eval ${id}.severity`) as Severity;
   if (!purposes.has(purpose)) throw new Error(`eval ${id} has invalid purpose`);
@@ -77,7 +85,7 @@ function validateTrigger(value: unknown, index: number): TriggerQuery {
   const query = object(value, `trigger query ${index}`);
   if (typeof query.should_trigger !== "boolean") throw new Error(`trigger query ${index}.should_trigger must be boolean`);
   return {
-    id: text(query.id, `trigger query ${index}.id`),
+    id: identifier(query.id, `trigger query ${index}.id`),
     query: text(query.query, `trigger query ${index}.query`),
     should_trigger: query.should_trigger,
     holdout: query.holdout === true,
@@ -87,7 +95,7 @@ function validateTrigger(value: unknown, index: number): TriggerQuery {
 export function validateSuite(value: unknown): EvalSuite {
   const suite = object(value, "suite");
   if (suite.schema_version !== 1) throw new Error("suite.schema_version must be 1");
-  if (!Array.isArray(suite.evals) || suite.evals.length === 0) throw new Error("suite.evals must contain at least one case");
+  if (!Array.isArray(suite.evals)) throw new Error("suite.evals must be an array");
   const evals = suite.evals.map(validateEval);
   const ids = new Set<string>();
   for (const evalCase of evals) {
@@ -99,6 +107,9 @@ export function validateSuite(value: unknown): EvalSuite {
     : Array.isArray(suite.trigger_queries)
       ? suite.trigger_queries.map(validateTrigger)
       : (() => { throw new Error("suite.trigger_queries must be an array"); })();
+  if (evals.length === 0 && (triggerQueries?.length ?? 0) === 0) {
+    throw new Error("suite must contain at least one behavior case or trigger query");
+  }
   const triggerIds = new Set<string>();
   for (const query of triggerQueries ?? []) {
     if (triggerIds.has(query.id)) throw new Error(`duplicate trigger query id: ${query.id}`);

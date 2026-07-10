@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { prepareRun, verifyRunIntegrity } from "../skills/skill-eval/scripts/lib/workspace.ts";
+import { createCampaign, loadCampaign } from "../skills/skill-eval/scripts/lib/campaign.ts";
 
 function git(cwd: string, args: string[]): void {
   const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
   if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+}
+
+function gitOutput(cwd: string, args: string[]): string {
+  const result = Bun.spawnSync(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(result.stderr.toString());
+  return result.stdout.toString().trim();
 }
 
 async function fixtureRepo(tracked: boolean): Promise<{ root: string; target: string; suitePath: string }> {
@@ -47,6 +54,31 @@ async function fixtureRepo(tracked: boolean): Promise<{ root: string; target: st
 }
 
 describe("run preparation", () => {
+  test("registers prepared runs with an evaluation campaign", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "Measure the authored improvement.", campaignRoot: join(runRoot, "campaigns"), campaignId: "linked" });
+    const state = await prepareRun({
+      targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "campaign-run",
+      campaignDir: campaign.campaign_dir, campaignRole: "calibration",
+    });
+
+    expect(state.campaign).toEqual({ campaign_dir: campaign.campaign_dir, role: "calibration" });
+    expect((await loadCampaign(campaign.campaign_dir)).runs).toMatchObject([{ run_id: "campaign-run", role: "calibration" }]);
+  });
+
+  test("rejects an invalid campaign role before reserving the run directory", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "Measure the authored improvement.", campaignRoot: join(runRoot, "campaigns"), campaignId: "invalid-role" });
+
+    await expect(prepareRun({
+      targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "should-not-exist",
+      campaignDir: campaign.campaign_dir, campaignRole: "draft",
+    })).rejects.toThrow("invalid campaign run role");
+    await expect(stat(join(runRoot, "should-not-exist"))).rejects.toThrow();
+  });
+
   test("freezes HEAD, authored bytes, and fixture copies for a tracked skill", async () => {
     const fixture = await fixtureRepo(true);
     const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
@@ -69,6 +101,73 @@ describe("run preparation", () => {
     expect(state.host_metadata?.claude?.version).toBeDefined();
   });
 
+  test("records validated evaluator-only exclusions without deleting frozen source", async () => {
+    const fixture = await fixtureRepo(true);
+    await mkdir(join(fixture.target, "references"), { recursive: true });
+    await writeFile(join(fixture.target, "references", "behavior-eval.md"), "# Private expected cases\n");
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+
+    const state = await prepareRun({
+      targetPath: fixture.target,
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      runRoot,
+      runId: "excluded-evaluator-file",
+      executorExclusions: ["references/behavior-eval.md"],
+    } as any);
+
+    expect(state.executor_exclusions).toEqual(["references/behavior-eval.md"]);
+    expect(await readFile(join(state.run_dir, "versions", "authored", "references", "behavior-eval.md"), "utf8")).toContain("Private expected cases");
+    await expect(prepareRun({
+      targetPath: fixture.target,
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      runRoot,
+      runId: "invalid-exclusion",
+      executorExclusions: ["SKILL.md"],
+    } as any)).rejects.toThrow("cannot exclude SKILL.md");
+  });
+
+  test("rejects a reused run id without overwriting frozen inputs", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const options = { targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex" as const], invokingHost: "codex" as const, runRoot, runId: "immutable-run" };
+    const state = await prepareRun(options);
+    const original = await readFile(join(state.run_dir, "versions", "authored", "SKILL.md"), "utf8");
+    await writeFile(join(fixture.target, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n\n# Replacement\n");
+
+    await expect(prepareRun(options)).rejects.toThrow("artifact directory already exists");
+    expect(await readFile(join(state.run_dir, "versions", "authored", "SKILL.md"), "utf8")).toBe(original);
+  });
+
+  test("rejects symlinks that could change frozen skill bytes after preparation", async () => {
+    const fixture = await fixtureRepo(true);
+    const external = join(fixture.root, "mutable-reference.md");
+    await writeFile(external, "original\n");
+    await symlink(external, join(fixture.target, "mutable-reference.md"));
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+
+    await expect(prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "symlinked" })).rejects.toThrow("symlinks are not allowed in frozen trees");
+  });
+
+  test("prepares a run from a bare repository skill name", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const state = await prepareRun({
+      targetPath: "demo",
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      cwd: fixture.root,
+      runRoot,
+      runId: "bare-name",
+    });
+
+    expect(state.target_path).toBe(await realpath(fixture.target));
+  });
+
   test("uses a no-skill anchor when the target is untracked", async () => {
     const fixture = await fixtureRepo(false);
     const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
@@ -83,6 +182,69 @@ describe("run preparation", () => {
 
     expect(state.anchor.kind).toBe("none");
     expect(state.hashes.versions.anchor).toBeNull();
+  });
+
+  test("freezes an explicit baseline before committed and local branch changes", async () => {
+    const fixture = await fixtureRepo(true);
+    const baseline = gitOutput(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["add", "skills/demo"]);
+    git(fixture.root, ["commit", "-qm", "commit authored skill"]);
+    await writeFile(join(fixture.target, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n\n# Local follow-up\n");
+
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const state = await prepareRun({
+      targetPath: fixture.target,
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      anchorRef: baseline,
+      runRoot,
+      runId: "committed-and-local",
+    });
+
+    expect(state.anchor).toEqual({ kind: "git", ref: baseline, commit: baseline });
+    expect(await readFile(join(state.run_dir, "versions", "anchor", "SKILL.md"), "utf8")).toContain("# Original");
+    expect(await readFile(join(state.run_dir, "versions", "authored", "SKILL.md"), "utf8")).toContain("# Local follow-up");
+  });
+
+  test("uses a no-skill anchor when a committed branch introduces the target", async () => {
+    const fixture = await fixtureRepo(false);
+    await writeFile(join(fixture.root, "README.md"), "fixture\n");
+    git(fixture.root, ["add", "README.md"]);
+    git(fixture.root, ["commit", "-qm", "baseline"]);
+    const baseline = gitOutput(fixture.root, ["rev-parse", "HEAD"]);
+    git(fixture.root, ["add", "skills/demo"]);
+    git(fixture.root, ["commit", "-qm", "add skill on branch"]);
+
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const state = await prepareRun({
+      targetPath: fixture.target,
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      anchorRef: baseline,
+      runRoot,
+      runId: "new-skill-on-branch",
+    });
+
+    expect(state.anchor).toEqual({ kind: "none", ref: baseline, commit: baseline });
+    expect(state.hashes.versions.anchor).toBeNull();
+    expect(state.git.target_tracked).toBe(true);
+    expect(await readFile(join(state.run_dir, "versions", "authored", "SKILL.md"), "utf8")).toContain("# Original");
+  });
+
+  test("rejects an explicit baseline ref that does not resolve", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    await expect(prepareRun({
+      targetPath: fixture.target,
+      suitePath: fixture.suitePath,
+      hosts: ["codex"],
+      invokingHost: "codex",
+      anchorRef: "missing-baseline",
+      runRoot,
+      runId: "missing-baseline",
+    })).rejects.toThrow("anchor ref does not resolve to a commit: missing-baseline");
   });
 
   test("rejects suite, fixture, or version mutation after freezing", async () => {

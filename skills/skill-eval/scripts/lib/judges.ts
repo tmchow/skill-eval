@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { mapLimit } from "./async.ts";
 import { createHostAdapters } from "./hosts.ts";
 import { copyTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { loadSuite, verifyRunIntegrity } from "./workspace.ts";
-import type { ExecutionRecord, HostAdapter, HostName, JudgeResult } from "./types.ts";
+import type { EvalCase, ExecutionRecord, HostAdapter, HostName, JudgeResult } from "./types.ts";
 
 export interface BlindJudgeOptions {
   runDir: string;
@@ -15,6 +17,7 @@ export interface BlindJudgeOptions {
   judgeHosts: HostName[];
   adapters?: Partial<Record<HostName, HostAdapter>>;
   timeoutMs?: number;
+  concurrency?: number;
   seed?: string;
   models?: Partial<Record<HostName, string>>;
 }
@@ -73,8 +76,8 @@ export async function runBlindJudges(options: BlindJudgeOptions): Promise<JudgeR
   const defaults = createHostAdapters();
   const adapters = { ...defaults, ...options.adapters };
   const comparatorInstructions = await readFile(resolve(import.meta.dir, "../../references/agents/comparator.md"), "utf8");
-  const results: JudgeResult[] = [];
   const executorHosts = [...new Set(executions.map((item) => item.host))];
+  const tasks: Array<{ attempt: string; opaqueAttemptId: string; evalCase: EvalCase; executorHost: HostName; repetition: number; left: ExecutionRecord; right: ExecutionRecord; judgeHost: HostName }> = [];
   for (const attempt of options.executionAttemptIds) {
     const opaqueAttemptId = createHash("sha256").update(attempt).digest("hex").slice(0, 16);
     for (const evalCase of suite.evals) {
@@ -83,44 +86,53 @@ export async function runBlindJudges(options: BlindJudgeOptions): Promise<JudgeR
         for (const repetition of repetitions) {
           const left = executions.find((item) => item.attempt_id === attempt && item.eval_id === evalCase.id && item.host === executorHost && item.version === options.left && item.repetition === repetition);
           const right = executions.find((item) => item.attempt_id === attempt && item.eval_id === evalCase.id && item.host === executorHost && item.version === options.right && item.repetition === repetition);
-          if (!left || !right) continue;
-          for (const judgeHost of options.judgeHosts) {
-            const judgeDir = join(runDir, "artifacts", "judges", opaqueComparisonId, opaqueAttemptId, evalCase.id, executorHost, `run-${repetition}`, judgeHost);
-            const inputDir = join(judgeDir, "input");
-            await mkdir(inputDir, { recursive: true });
-            const shouldSwap = swap(`${options.seed ?? "skill-eval"}:${id}:${attempt}:${evalCase.id}:${executorHost}:${repetition}:${judgeHost}`);
-            const labels = shouldSwap ? { A: options.right, B: options.left } : { A: options.left, B: options.right };
-            const sourceA = labels.A === options.left ? left.output_dir : right.output_dir;
-            const sourceB = labels.B === options.left ? left.output_dir : right.output_dir;
-            const aPath = join(inputDir, "A"); const bPath = join(inputDir, "B");
-            await copyTree(sourceA, aPath); await copyTree(sourceB, bPath);
-            const schemaPath = join(judgeDir, "verdict.schema.json");
-            await writeJson(schemaPath, {
-              type: "object",
-              properties: {
-                winner: { enum: ["A", "B", "TIE"] }, reasoning: { type: "string" },
-                rubric: { type: "object" }, strengths: { type: "object" }, weaknesses: { type: "object" },
-              },
-              required: ["winner", "reasoning", "rubric", "strengths", "weaknesses"], additionalProperties: false,
-            });
-            const eventPath = join(judgeDir, "events.jsonl"); const stderrPath = join(judgeDir, "stderr.txt"); const finalPath = join(judgeDir, "final.json");
-            const result = await adapters[judgeHost].execute({ cwd: judgeDir, prompt: prompt(comparatorInstructions, evalCase.name, evalCase.prompt, evalCase.expectations.map((item) => item.text), aPath, bPath), eventPath, stderrPath, finalPath, timeoutMs: options.timeoutMs ?? 5 * 60_000, outputSchemaPath: schemaPath, model: options.models?.[judgeHost] });
-            const verdict = parseVerdict(result.final_text);
-            await writeJson(join(judgeDir, "label-map.json"), labels);
-            const winnerLabel = verdict?.winner ?? "TIE";
-            const judgeResult: JudgeResult = {
-              schema_version: 1, comparison_id: id, execution_attempt_id: attempt, repetition, eval_id: evalCase.id, executor_host: executorHost, judge_host: judgeHost,
-              left_version: options.left, right_version: options.right, labels, winner_label: winnerLabel, preferred_version: winnerLabel === "TIE" ? "TIE" : labels[winnerLabel],
-              reasoning: verdict?.reasoning ?? `invalid judge output: ${result.final_text.slice(0, 500)}`,
-              rubric: verdict?.rubric, strengths: verdict?.strengths, weaknesses: verdict?.weaknesses,
-              valid: verdict !== null && result.exit_code === 0, run_dir: judgeDir,
-            };
-            await writeJson(join(judgeDir, "judgment.json"), judgeResult);
-            results.push(judgeResult);
-          }
+          if (left && right) for (const judgeHost of options.judgeHosts) tasks.push({ attempt, opaqueAttemptId, evalCase, executorHost, repetition, left, right, judgeHost });
         }
       }
     }
+  }
+  const scratchRoot = await mkdtemp(join(tmpdir(), "skill-eval-judge-"));
+  let results: JudgeResult[] = [];
+  try {
+    results = await mapLimit(tasks, options.concurrency ?? 2, async ({ attempt, opaqueAttemptId, evalCase, executorHost, repetition, left, right, judgeHost }) => {
+              const opaqueExecutor = createHash("sha256").update(executorHost).digest("hex").slice(0, 8);
+              const judgeDir = join(scratchRoot, opaqueAttemptId, evalCase.id, opaqueExecutor, `run-${repetition}`, judgeHost);
+              const archiveDir = join(runDir, "artifacts", "judges", opaqueComparisonId, opaqueAttemptId, evalCase.id, executorHost, `run-${repetition}`, judgeHost);
+              const inputDir = join(judgeDir, "input");
+              await mkdir(inputDir, { recursive: true });
+              const shouldSwap = swap(`${options.seed ?? "skill-eval"}:${id}:${attempt}:${evalCase.id}:${executorHost}:${repetition}:${judgeHost}`);
+              const labels = shouldSwap ? { A: options.right, B: options.left } : { A: options.left, B: options.right };
+              const sourceA = labels.A === options.left ? left.output_dir : right.output_dir;
+              const sourceB = labels.B === options.left ? left.output_dir : right.output_dir;
+              const aPath = join(inputDir, "A"); const bPath = join(inputDir, "B");
+              await copyTree(sourceA, aPath); await copyTree(sourceB, bPath);
+              const schemaPath = join(judgeDir, "verdict.schema.json");
+              await writeJson(schemaPath, {
+                type: "object",
+                properties: {
+                  winner: { enum: ["A", "B", "TIE"] }, reasoning: { type: "string" },
+                  rubric: { type: "object" }, strengths: { type: "object" }, weaknesses: { type: "object" },
+                },
+                required: ["winner", "reasoning", "rubric", "strengths", "weaknesses"], additionalProperties: false,
+              });
+              const eventPath = join(judgeDir, "events.jsonl"); const stderrPath = join(judgeDir, "stderr.txt"); const finalPath = join(judgeDir, "final.json");
+              const result = await adapters[judgeHost].execute({ cwd: judgeDir, prompt: prompt(comparatorInstructions, evalCase.name, evalCase.prompt, evalCase.expectations.map((item) => item.text), aPath, bPath), eventPath, stderrPath, finalPath, timeoutMs: options.timeoutMs ?? 5 * 60_000, outputSchemaPath: schemaPath, model: options.models?.[judgeHost] });
+              const verdict = parseVerdict(result.final_text);
+              await writeJson(join(judgeDir, "label-map.json"), labels);
+              const winnerLabel = verdict?.winner ?? "TIE";
+              const judgeResult: JudgeResult = {
+                schema_version: 1, comparison_id: id, execution_attempt_id: attempt, repetition, eval_id: evalCase.id, executor_host: executorHost, judge_host: judgeHost,
+                left_version: options.left, right_version: options.right, labels, winner_label: winnerLabel, preferred_version: winnerLabel === "TIE" ? "TIE" : labels[winnerLabel],
+                reasoning: verdict?.reasoning ?? `invalid judge output: ${result.final_text.slice(0, 500)}`,
+                rubric: verdict?.rubric, strengths: verdict?.strengths, weaknesses: verdict?.weaknesses,
+                valid: verdict !== null && result.exit_code === 0, run_dir: archiveDir,
+              };
+              await copyTree(judgeDir, archiveDir);
+              await writeJson(join(archiveDir, "judgment.json"), judgeResult);
+              return judgeResult;
+    });
+  } finally {
+    await rm(scratchRoot, { recursive: true, force: true });
   }
   if (results.length === 0) throw new Error("blind judging found no paired executions");
   await writeJson(join(runDir, "judgments.json"), [...previous, ...results]);

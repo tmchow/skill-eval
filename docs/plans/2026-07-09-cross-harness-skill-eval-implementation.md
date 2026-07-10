@@ -144,7 +144,7 @@ Preflight must return structured checks with `ready`, `degraded`, or `blocked`, 
 
 - [x] **Step 4: Implement frozen run preparation**
 
-`prepareRun` creates `/tmp/skill-eval/<skill-name>/<run-id>/`, snapshots the authored skill, extracts the tracked `HEAD` version or records a no-skill anchor, freezes fixtures, records SHA-256 hashes, captures initial Git status/branch, and writes `run.json` plus `suite.json` atomically.
+`prepareRun` creates `/tmp/skill-eval/<skill-name>/<run-id>/`, snapshots the complete authored skill, extracts the target at `HEAD` or an explicit baseline ref (recording no-skill when absent), freezes fixtures, records SHA-256 hashes, captures initial Git status/branch, and writes `run.json` plus `suite.json` atomically.
 
 - [x] **Step 5: Verify GREEN**
 
@@ -264,7 +264,7 @@ Expected: PASS.
 
 **Interfaces:**
 - Consumes: agent-authored suite JSON and challenger skill directories.
-- Produces: CLI commands `preflight`, `prepare`, `add-version`, `run`, `judge`, `trigger`, `benchmark`, `persist-suite`, `review`, and `promote`; plus one portable runtime workflow.
+- Produces: CLI commands `preflight`, `prepare`, `add-version`, `check-script`, `run`, `grade`, `grade-model`, `judge`, `trigger`, `benchmark`, `compare`, `decide`, `optimize`, `optimize-description`, `certify`, `status`, `persist-suite`, `review-suite`, `review`, `record-feedback`, and `promote`; plus one portable runtime workflow.
 
 - [x] **Step 1: Write failing CLI, promotion, and skill-contract tests**
 
@@ -328,7 +328,7 @@ Expected: every command exits 0.
 
 - [x] **Step 4: Run a local fake-harness end-to-end smoke**
 
-Run the CLI through preflight, prepare, matrix, grade, judge, benchmark, and review generation using test doubles. Confirm source hashes remain unchanged and the benchmark identifies the better fixture output.
+Run the CLI through preflight, prepare, resumable matrix, incremental grade, compare, promotion-grade certify, status, and review generation using test doubles. Confirm source hashes remain unchanged, evaluation-only comparison needs no holdout, certification fails fast without one, and the benchmark identifies the better fixture output.
 
 - [x] **Step 5: Review the final diff and commit**
 

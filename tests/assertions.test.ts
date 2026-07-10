@@ -11,6 +11,10 @@ async function execution(): Promise<ExecutionRecord> {
   await mkdir(outputs);
   await writeFile(join(outputs, "result.txt"), "status: ready\n");
   await writeFile(join(outputs, "data.json"), '{"items":[{"name":"alpha"}]}');
+  await writeFile(join(root, "events.jsonl"), [
+    JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "bash /plugin/cross-model-doc-review.sh codex adversarial" } }] } }),
+    JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: "printf done" } }),
+  ].join("\n"));
   return {
     schema_version: 1, attempt_id: "attempt", partition: "training", created_at: new Date().toISOString(), host: "codex", eval_id: "case", version: "authored", repetition: 1,
     run_dir: root, output_dir: outputs, skill_path: null, skill_hash_before: null, skill_hash_after: null, source_mutated: false,
@@ -59,5 +63,37 @@ describe("deterministic grading", () => {
     expect(result.expectations[0]?.blocked).toBe(true);
     expect(result.expectations[0]?.passed).toBeNull();
     expect(result.summary.critical_blocked).toBe(1);
+  });
+
+  test("grades tool invocations from host event traces without matching prompt text", async () => {
+    const record = await execution();
+    const result = await gradeExecution(record, {
+      ...evalCase,
+      expectations: [
+        { id: "called", text: "cross-model reviewer launched", severity: "critical", check: { type: "tool_called", value: "cross-model-doc-review.sh" } },
+        { id: "not-called", text: "security peer was not launched", severity: "critical", check: { type: "tool_not_called", value: "security-lens" } },
+        { id: "once", text: "adversarial peer launched once", severity: "critical", check: { type: "tool_call_count", value: "adversarial", count: 1 } },
+      ],
+    });
+
+    expect(result.summary.passed).toBe(3);
+    expect(result.summary.critical_failed).toBe(0);
+    expect(result.expectations[0]?.evidence).toContain("tool calls");
+  });
+
+  test("fails the run when host event evidence is malformed even if artifacts exist", async () => {
+    const record = await execution();
+    record.host_result.malformed_events = 1;
+    const result = await gradeExecution(record, {
+      ...evalCase,
+      expectations: [
+        { id: "exists", text: "result exists", severity: "critical", check: { type: "file_exists", path: "result.txt" } },
+        { id: "exit", text: "executor evidence is valid", severity: "critical", check: { type: "exit_success" } },
+      ],
+    });
+
+    expect(result.summary.run_failed).toBe(true);
+    expect(result.summary.critical_failed).toBeGreaterThan(0);
+    expect(result.expectations.find((item) => item.id === "exit")?.passed).toBe(false);
   });
 });

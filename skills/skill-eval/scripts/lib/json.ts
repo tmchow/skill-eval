@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, open, readdir, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export async function readJson<T>(path: string): Promise<T> {
@@ -49,13 +49,9 @@ export async function hashTree(root: string): Promise<string> {
     hash.update("\0");
     hash.update(String(info.mode & 0o777));
     hash.update("\0");
-    if (info.isSymbolicLink()) {
-      hash.update("symlink\0");
-      hash.update(await readlink(absolute));
-    } else {
-      hash.update("file\0");
-      hash.update(await readFile(absolute));
-    }
+    if (info.isSymbolicLink()) throw new Error(`symlinks are not allowed in frozen trees: ${path}`);
+    hash.update("file\0");
+    hash.update(await readFile(absolute));
     hash.update("\0");
   }
   return hash.digest("hex");

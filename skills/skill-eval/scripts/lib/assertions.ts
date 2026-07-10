@@ -19,15 +19,57 @@ function jsonPointer(value: unknown, pointer: string): unknown {
   }, value);
 }
 
+function invocationText(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
+  const value = item as Record<string, any>;
+  if (value.type === "tool_use") return `${String(value.name ?? "tool")} ${JSON.stringify(value.input ?? {})}`;
+  if (value.type === "command_execution") return `command_execution ${String(value.command ?? "")}`;
+  if (value.type === "mcp_tool_call") return `mcp_tool_call ${String(value.server ?? "")} ${String(value.tool ?? value.name ?? "")} ${JSON.stringify(value.arguments ?? value.input ?? {})}`;
+  if (value.type === "function_call") return `function_call ${String(value.name ?? "")} ${JSON.stringify(value.arguments ?? {})}`;
+  return null;
+}
+
+async function recordedToolCalls(eventPath: string): Promise<string[]> {
+  const raw = await readFile(eventPath, "utf8");
+  const calls: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let event: Record<string, any>;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === "assistant" && Array.isArray(event.message?.content)) {
+      for (const item of event.message.content) {
+        const invocation = invocationText(item);
+        if (invocation) calls.push(invocation);
+      }
+    }
+    if (event.type === "item.completed") {
+      const invocation = invocationText(event.item);
+      if (invocation) calls.push(invocation);
+    }
+    if (event.type === "tool_use") {
+      const invocation = invocationText(event);
+      if (invocation) calls.push(invocation);
+    }
+  }
+  return calls;
+}
+
 async function inspect(record: ExecutionRecord, check: DeterministicCheck): Promise<{ passed: boolean; evidence: string }> {
   if (check.type === "exit_success") {
-    const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && !record.source_mutated;
-    return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, source_mutated=${record.source_mutated}` };
+    const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && record.host_result.malformed_events === 0 && !record.source_mutated;
+    return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, malformed_events=${record.host_result.malformed_events}, source_mutated=${record.source_mutated}` };
   }
   if (check.type === "final_contains" || check.type === "final_not_contains") {
     const found = matches(record.host_result.final_text, check.value, check.regex);
     const passed = check.type === "final_contains" ? found : !found;
     return { passed, evidence: `${check.type}: ${JSON.stringify(check.value)} ${found ? "was" : "was not"} present in final output` };
+  }
+  if (check.type === "tool_called" || check.type === "tool_not_called" || check.type === "tool_call_count") {
+    if (record.host_result.malformed_events > 0) throw new Error(`tool-call trace contains ${record.host_result.malformed_events} malformed events`);
+    const calls = await recordedToolCalls(record.host_result.event_path);
+    const count = calls.filter((call) => matches(call, check.value, check.regex)).length;
+    const passed = check.type === "tool_called" ? count > 0 : check.type === "tool_not_called" ? count === 0 : count === check.count;
+    return { passed, evidence: `${count} of ${calls.length} recorded tool calls matched ${JSON.stringify(check.value)}` };
   }
   const path = containedPath(record.output_dir, check.path);
   let exists = true;
@@ -69,7 +111,7 @@ export async function gradeExecution(record: ExecutionRecord, evalCase: EvalCase
   const blocked = expectations.filter((item) => item.blocked).length;
   const qualitative = expectations.filter((item) => item.passed === null && !item.blocked).length;
   const graded = passed + failed;
-  const runFailed = record.host_result.exit_code !== 0 || record.host_result.timed_out || record.source_mutated;
+  const runFailed = record.host_result.exit_code !== 0 || record.host_result.timed_out || record.host_result.malformed_events > 0 || record.source_mutated;
   const expectationCriticalFailures = expectations.filter((item) => item.severity === "critical" && item.passed === false).length;
   const caseCriticalFailure = evalCase.severity === "critical" && failed > 0 && expectationCriticalFailures === 0 ? 1 : 0;
   return {

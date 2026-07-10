@@ -38,7 +38,7 @@ export function terminateProcessTree(
   try { processHandle.kill("SIGKILL"); } catch { /* process already exited */ }
 }
 
-function environment(overrides?: Record<string, string | undefined>): Record<string, string> {
+export function environment(overrides?: Record<string, string | undefined>): Record<string, string> {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries({ ...process.env, ...overrides })) {
     if (value !== undefined) result[key] = value;

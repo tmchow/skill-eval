@@ -4,7 +4,7 @@ import { hashValue, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { analyzeBenchmark } from "./analyzer.ts";
 import { summarizeTriggers } from "./triggers.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
-import type { BenchmarkArtifact, EvidencePartition, ExecutionRecord, GradingResult, HumanJudgment, JudgeResult, MetricStats, ModelGradingResult, TriggerResult } from "./types.ts";
+import type { BehaviorAttemptManifest, BenchmarkArtifact, BenchmarkPartition, BenchmarkVersionSummary, EvidencePartition, ExecutionRecord, GradingResult, HumanJudgment, JudgeResult, MetricStats, ModelGradingResult, TriggerResult } from "./types.ts";
 
 async function treeBytes(path: string): Promise<number> {
   const info = await stat(path);
@@ -30,13 +30,26 @@ export interface BenchmarkOptions {
   right: string;
   attemptIds: string[];
   comparisonId?: string;
+  judgmentComparisonId?: string;
   minimumEffect?: number;
+  partitions?: EvidencePartition[];
 }
 
 function comparisonId(value?: string): string {
   const id = value ?? `comparison-${Date.now()}`;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new Error("comparison id must contain only letters, digits, dot, underscore, or hyphen");
   return id;
+}
+
+function determineVerdict(gatesPassed: boolean, gateReasons: string[], effectPasses: boolean, qualitativePasses: boolean, noRegression: boolean): BenchmarkArtifact["verdict"] {
+  if (!gatesPassed) {
+    if (gateReasons.some((reason) => reason.includes("timed out"))) return "blocked or limited signal";
+    if (gateReasons.some((reason) => reason.includes("baseline executor"))) return "blocked or limited signal";
+    return gateReasons.some((reason) => reason.includes("failure") || reason.includes("unsuccessful")) ? "critical regression" : "blocked or limited signal";
+  }
+  if (effectPasses || qualitativePasses) return "improvement demonstrated";
+  if (noRegression) return "no regression found";
+  return "no demonstrated improvement";
 }
 
 export async function buildBenchmark(options: BenchmarkOptions): Promise<BenchmarkArtifact> {
@@ -48,6 +61,17 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
   let previousBenchmarks: BenchmarkArtifact[] = [];
   try { previousBenchmarks = await readJson<BenchmarkArtifact[]>(join(runDir, "benchmarks.json")); } catch { /* first benchmark */ }
   if (previousBenchmarks.some((item) => item.comparison_id === id)) throw new Error(`comparison id already exists: ${id}`);
+  const attemptSet = new Set(options.attemptIds);
+  let judgments: JudgeResult[] = [];
+  try { judgments = await readJson<JudgeResult[]>(join(runDir, "judgments.json")); } catch { /* no qualitative cases */ }
+  const matchingJudgmentIds = [...new Set(judgments.filter((item) => item.valid
+    && item.left_version === options.left
+    && item.right_version === options.right
+    && attemptSet.has(item.execution_attempt_id)).map((item) => item.comparison_id))];
+  if (!options.judgmentComparisonId && matchingJudgmentIds.length > 1) {
+    throw new Error("benchmark matches multiple judgment comparisons; provide judgmentComparisonId");
+  }
+  const selectedJudgmentId = options.judgmentComparisonId ?? matchingJudgmentIds[0];
   const artifactDir = join(runDir, "artifacts", "benchmarks", id);
   await reserveArtifactDir(artifactDir);
   await writeJson(join(artifactDir, "benchmark-attempt.json"), { schema_version: 1, comparison_id: id, status: "started", created_at: new Date().toISOString(), left: options.left, right: options.right, attempt_ids: options.attemptIds });
@@ -61,7 +85,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
       continue;
     }
     try {
-      const manifest = await readJson<any>(manifestPath);
+      const manifest = await readJson<BehaviorAttemptManifest>(manifestPath);
       const actual = allExecutions.filter((item) => item.attempt_id === attemptId).length;
       if (manifest.status !== "complete" || actual !== manifest.planned_records || manifest.record_count !== manifest.planned_records) {
         gateReasons.push(`behavior attempt incomplete: ${attemptId}`);
@@ -73,24 +97,27 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
       gateReasons.push(`behavior attempt manifest invalid: ${attemptId}`);
     }
   }
-  let judgments: JudgeResult[] = [];
   let modelGradings: ModelGradingResult[] = [];
   let humanJudgments: HumanJudgment[] = [];
   let triggers: TriggerResult[] = [];
-  try { judgments = await readJson<JudgeResult[]>(join(runDir, "judgments.json")); } catch { /* no qualitative cases */ }
   try { modelGradings = await readJson<ModelGradingResult[]>(join(runDir, "model-gradings.json")); } catch { /* no qualitative grading */ }
   try { humanJudgments = await readJson<HumanJudgment[]>(join(runDir, "human-judgments.json")); } catch { /* no human adjudication */ }
   try { triggers = await readJson<TriggerResult[]>(join(runDir, "triggers.json")); } catch { /* trigger suite not run */ }
 
-  const attemptSet = new Set(options.attemptIds);
   const executions = allExecutions.filter((item) => attemptSet.has(item.attempt_id));
   if (executions.length === 0) throw new Error("selected attempts contain no executions");
-  const gradings = allGradings.filter((item) => !item.attempt_id || attemptSet.has(item.attempt_id));
-  const partitions: Record<string, any> = {};
+  const gradings = allGradings.filter((item) => item.attempt_id !== undefined && attemptSet.has(item.attempt_id));
+  const partitions: Partial<Record<EvidencePartition, BenchmarkPartition>> = {};
   let suite: Awaited<ReturnType<typeof loadSuite>> | null = null;
   try { suite = await loadSuite(runDir); } catch { /* legacy test artifact without a frozen suite */ }
+  const skillBytes = new Map<string, number>();
+  await Promise.all([options.left, options.right].map(async (version) => {
+    const path = state.versions[version]?.path;
+    skillBytes.set(version, path ? await treeBytes(path) : 0);
+  }));
 
-  for (const partition of ["training", "holdout"] as EvidencePartition[]) {
+  const requiredPartitions = options.partitions ?? ["training", "holdout"];
+  for (const partition of requiredPartitions) {
     const partitionRuns = executions.filter((item) => item.partition === partition);
     if (partitionRuns.length === 0) {
       gateReasons.push(`missing ${partition} evidence`);
@@ -118,10 +145,9 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
         }
       }
     }
-    const versionSummary = async (version: string) => {
+    const versionSummary = (version: string): BenchmarkVersionSummary => {
       const runs = partitionRuns.filter((item) => item.version === version);
       const grades = gradings.filter((item) => item.partition === partition && item.version === version);
-      const versionPath = state.versions[version]?.path;
       const unsuccessful = runs.filter((item) => item.host_result.exit_code !== 0 || item.host_result.timed_out || item.host_result.malformed_events > 0 || item.source_mutated).length;
       const effectiveGrades = grades.map((grade) => {
         const model = modelGradings.filter((item) => item.valid && item.execution_attempt_id === grade.attempt_id && item.partition === partition && item.executor_host === grade.host && item.eval_id === grade.eval_id && item.version === version && item.repetition === grade.repetition);
@@ -148,6 +174,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
         runs: runs.length,
         successful_runs: runs.length - unsuccessful,
         unsuccessful_runs: unsuccessful,
+        timed_out_runs: runs.filter((item) => item.host_result.timed_out).length,
         pass_rate: calculateStats(effectiveGrades.map((item) => item.passRate)),
         duration_ms: calculateStats(runs.map((item) => item.host_result.duration_ms)),
         total_tokens: calculateStats(runs.map((item) => item.host_result.usage.total_tokens)),
@@ -157,16 +184,18 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
         critical_failed: effectiveGrades.reduce((sum, item) => sum + item.criticalFailed, 0),
         critical_blocked: effectiveGrades.reduce((sum, item) => sum + item.criticalBlocked, 0),
         blocked: effectiveGrades.reduce((sum, item) => sum + item.blocked, 0),
-        skill_bytes: versionPath ? await treeBytes(versionPath) : 0,
+        skill_bytes: skillBytes.get(version) ?? 0,
         trigger: triggers.some((item) => item.version === version && item.partition === partition)
           ? summarizeTriggers(triggers.filter((item) => item.version === version && item.partition === partition))
           : null,
       };
     };
-    const left = await versionSummary(options.left);
-    const right = await versionSummary(options.right);
+    const left = versionSummary(options.left);
+    const right = versionSummary(options.right);
     if (left.runs === 0 || right.runs === 0) gateReasons.push(`${partition} evidence does not include both versions`);
-    if (right.unsuccessful_runs > 0) gateReasons.push(`${partition} candidate has unsuccessful executor runs`);
+    if (left.timed_out_runs > 0 || right.timed_out_runs > 0) gateReasons.push(`${partition} executor timed out; result is inconclusive`);
+    if (left.unsuccessful_runs > left.timed_out_runs) gateReasons.push(`${partition} baseline executor has unsuccessful runs; comparison is inconclusive`);
+    if (right.unsuccessful_runs > right.timed_out_runs) gateReasons.push(`${partition} candidate has unsuccessful executor runs`);
     if (right.critical_failed > 0) gateReasons.push(`${partition} candidate has critical failures`);
     if (right.critical_blocked > 0) gateReasons.push(`${partition} candidate has blocked critical checks`);
     const leftPass = left.pass_rate.mean;
@@ -183,8 +212,14 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     };
   }
 
-  const validJudgments = judgments.filter((item) => item.valid && item.left_version === options.left && item.right_version === options.right && attemptSet.has(item.execution_attempt_id));
+  const validJudgments = judgments.filter((item) => item.valid
+    && (!selectedJudgmentId || item.comparison_id === selectedJudgmentId)
+    && item.left_version === options.left
+    && item.right_version === options.right
+    && attemptSet.has(item.execution_attempt_id));
   const validHumanJudgments = humanJudgments.filter((human) => attemptSet.has(human.execution_attempt_id) && judgments.some((judgment) =>
+    (!selectedJudgmentId || judgment.comparison_id === selectedJudgmentId)
+    &&
     judgment.comparison_id === human.comparison_id
     && judgment.execution_attempt_id === human.execution_attempt_id
     && judgment.eval_id === human.eval_id
@@ -200,23 +235,38 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     human_right: validHumanJudgments.filter((item) => item.preferred_version === options.right).length,
     human_tie: validHumanJudgments.filter((item) => item.preferred_version === "TIE").length,
   };
+  const judgeHosts = [...new Set(validJudgments.map((item) => item.judge_host))];
+  const judgeHostPreferences = Object.fromEntries(judgeHosts.map((host) => {
+    const selected = validJudgments.filter((item) => item.judge_host === host);
+    return [host, {
+      left: selected.filter((item) => item.preferred_version === options.left).length,
+      right: selected.filter((item) => item.preferred_version === options.right).length,
+      tie: selected.filter((item) => item.preferred_version === "TIE").length,
+    }];
+  }));
+  const judgmentCases = new Map<string, JudgeResult[]>();
+  for (const judgment of validJudgments) {
+    const key = `${judgment.execution_attempt_id}\0${judgment.eval_id}\0${judgment.executor_host}\0${judgment.repetition}`;
+    judgmentCases.set(key, [...(judgmentCases.get(key) ?? []), judgment]);
+  }
+  let agreementCases = 0; let disagreementCases = 0;
+  for (const selected of judgmentCases.values()) {
+    if (new Set(selected.map((item) => item.judge_host)).size < 2) continue;
+    if (new Set(selected.map((item) => item.preferred_version)).size === 1) agreementCases += 1;
+    else disagreementCases += 1;
+  }
+  const crossModel = { judge_hosts: judgeHostPreferences, agreement_cases: agreementCases, disagreement_cases: disagreementCases };
   const gatesPassed = gateReasons.length === 0;
   const minimumEffect = options.minimumEffect ?? 0.05;
-  const partitionDeltas = Object.values(partitions).map((item: any) => item.delta.pass_rate as number | null);
+  const partitionDeltas = Object.values(partitions).map((item) => item.delta.pass_rate);
   const deltas = partitionDeltas.filter((value): value is number => typeof value === "number");
-  const objectiveNonRegression = partitionDeltas.length === 2 && partitionDeltas.every((value) => value === null || value >= 0);
-  const effectPasses = deltas.length === 2 && deltas.every((value) => value >= minimumEffect);
+  const objectiveNonRegression = partitionDeltas.length === requiredPartitions.length && partitionDeltas.every((value) => value === null || value >= 0);
+  const effectPasses = deltas.length === requiredPartitions.length && deltas.every((value) => value >= minimumEffect);
   const agentPreferenceTotal = preferences.left + preferences.right + preferences.tie;
   const strongAgentPreference = preferences.right >= 2 && preferences.left === 0 && preferences.right / agentPreferenceTotal >= 2 / 3;
   const qualitativePasses = objectiveNonRegression && ((preferences.human_right > 0 && preferences.human_left === 0) || strongAgentPreference);
   const noRegression = objectiveNonRegression && preferences.right >= preferences.left && preferences.human_left === 0;
-  const verdict: BenchmarkArtifact["verdict"] = !gatesPassed
-    ? (gateReasons.some((reason) => reason.includes("failure") || reason.includes("unsuccessful")) ? "critical regression" : "blocked or limited signal")
-    : effectPasses || qualitativePasses
-      ? "improvement demonstrated"
-      : noRegression
-        ? "no regression found"
-        : "no demonstrated improvement";
+  const verdict = determineVerdict(gatesPassed, gateReasons, effectPasses, qualitativePasses, noRegression);
   const unsignedBase = {
     schema_version: 1 as const,
     comparison_id: id,
@@ -225,6 +275,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     attempt_ids: [...options.attemptIds],
     partitions,
     preferences,
+    cross_model: crossModel,
     gates: { passed: gatesPassed, reasons: gateReasons },
     verdict,
   };

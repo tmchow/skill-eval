@@ -12,6 +12,9 @@ export type DeterministicCheck =
   | { type: "json_pointer_equals"; path: string; pointer: string; value: unknown }
   | { type: "final_contains"; value: string; regex?: boolean }
   | { type: "final_not_contains"; value: string; regex?: boolean }
+  | { type: "tool_called"; value: string; regex?: boolean }
+  | { type: "tool_not_called"; value: string; regex?: boolean }
+  | { type: "tool_call_count"; value: string; count: number; regex?: boolean }
   | { type: "exit_success" };
 
 export interface Expectation {
@@ -94,7 +97,11 @@ export interface RunState {
   invoking_host: HostName;
   requested_hosts: HostName[];
   host_metadata?: Partial<Record<HostName, { version: string | null }>>;
-  anchor: { kind: "git"; ref: string } | { kind: "none" };
+  executor_exclusions?: string[];
+  campaign?: { campaign_dir: string; role: string };
+  anchor:
+    | { kind: "git"; ref: string; commit?: string }
+    | { kind: "none"; ref?: string; commit?: string };
   versions: Record<string, { path: string; parent: string | null; created_at: string }>;
   hashes: {
     versions: Record<string, string | null>;
@@ -115,8 +122,13 @@ export interface PrepareRunOptions {
   suitePath: string;
   hosts: HostName[];
   invokingHost: HostName;
+  anchorRef?: string;
+  cwd?: string;
   runRoot?: string;
   runId?: string;
+  executorExclusions?: string[];
+  campaignDir?: string;
+  campaignRole?: string;
 }
 
 export interface HostRequest {
@@ -173,7 +185,25 @@ export interface ExecutionRecord {
   skill_hash_before: string | null;
   skill_hash_after: string | null;
   source_mutated: boolean;
+  executor_exclusions?: string[];
   host_result: HostResult;
+}
+
+export interface BehaviorAttemptManifest {
+  schema_version: 1;
+  attempt_id: string;
+  kind: "behavior";
+  status: "started" | "interrupted" | "complete";
+  created_at: string;
+  partition: EvidencePartition | "all";
+  versions: string[];
+  hosts: HostName[];
+  eval_ids: string[];
+  repetitions: number;
+  planned_records: number;
+  record_count: number;
+  completed_at?: string;
+  interrupted_at?: string;
 }
 
 export interface GradedExpectation {
@@ -215,14 +245,48 @@ export interface MetricStats {
   max: number | null;
 }
 
+export interface BenchmarkVersionSummary {
+  runs: number;
+  successful_runs: number;
+  unsuccessful_runs: number;
+  timed_out_runs: number;
+  pass_rate: MetricStats;
+  duration_ms: MetricStats;
+  total_tokens: MetricStats;
+  cost_usd: MetricStats;
+  tool_calls: MetricStats;
+  errors: MetricStats;
+  critical_failed: number;
+  critical_blocked: number;
+  blocked: number;
+  skill_bytes: number;
+  trigger: Record<string, unknown> | null;
+}
+
+export interface BenchmarkPartition {
+  versions: Record<string, BenchmarkVersionSummary>;
+  delta: {
+    pass_rate: number | null;
+    duration_ms: number | null;
+    total_tokens: number | null;
+    cost_usd: number | null;
+    skill_bytes: number;
+  };
+}
+
 export interface BenchmarkArtifact {
   schema_version: 1;
   comparison_id: string;
   created_at: string;
   comparison: { left: string; right: string };
   attempt_ids: string[];
-  partitions: Record<string, any>;
+  partitions: Partial<Record<EvidencePartition, BenchmarkPartition>>;
   preferences: { left: number; right: number; tie: number; human_left?: number; human_right?: number; human_tie?: number };
+  cross_model?: {
+    judge_hosts: Record<string, { left: number; right: number; tie: number }>;
+    agreement_cases: number;
+    disagreement_cases: number;
+  };
   gates: { passed: boolean; reasons: string[] };
   verdict: "improvement demonstrated" | "no regression found" | "no demonstrated improvement" | "critical regression" | "blocked or limited signal";
   notes?: string[];
