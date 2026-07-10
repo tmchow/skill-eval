@@ -1,0 +1,126 @@
+name: Bug report
+description: Report reproducible incorrect behavior in Skill Eval
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Focused reproductions are welcome even without a proposed fix. Remove credentials and private content from all logs and artifacts.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Target or baseline resolution
+        - Fixture or run preparation
+        - Behavior execution
+        - Trigger discovery
+        - Grading or blind judging
+        - Optimization or certification
+        - Resume, status, or timeouts
+        - Promotion
+        - Human review UI
+        - Installation or packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+      description: What happened? Include the exact error or incorrect result when possible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest reliable sequence, repository state, or sample skill needed to reproduce the problem.
+      placeholder: |
+        1. Start from...
+        2. Invoke...
+        3. Observe...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: development_state
+    attributes:
+      label: Skill development state
+      options:
+        - New or uncommitted skill
+        - Uncommitted changes to an existing skill
+        - Committed feature branch
+        - Pull request
+        - Not relevant
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Skill Eval version or commit
+      description: Provide the installed version, Git commit, or branch when known.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, Bun version, and relevant Claude Code or Codex CLI versions.
+      placeholder: |
+        OS:
+        Bun:
+        Claude Code:
+        Codex:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: model_behavior
+    attributes:
+      label: Does this involve model behavior?
+      description: Choose Yes for triggering, grading, judging, output quality, or cross-host differences.
+      options:
+        - "Yes"
+        - "No"
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: model_context
+    attributes:
+      label: Harness, model, and reasoning setting
+      description: Required when model behavior is involved; otherwise optional. Report only visible configuration, never hidden chain-of-thought.
+      placeholder: |
+        Harness and version:
+        Model:
+        Visible reasoning setting:
+        Invoking host and secondary host:
+
+  - type: textarea
+    id: artifacts
+    attributes:
+      label: Sanitized evidence
+      description: Add relevant redacted logs, run or campaign paths, screenshots, or a minimal reproduction repository.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, private prompts, and other sensitive content from this report.
+          required: true
