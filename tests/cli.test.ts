@@ -12,7 +12,7 @@ describe("skill-eval CLI", () => {
     const result = run(["--help"]);
     const output = result.stdout.toString();
     expect(result.exitCode).toBe(0);
-    for (const command of ["preflight", "prepare", "add-version", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "decide", "optimize", "optimize-description", "certify", "persist-suite", "review-suite", "review", "ingest-feedback", "promote"]) {
+    for (const command of ["preflight", "prepare", "add-version", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "decide", "optimize", "optimize-description", "certify", "persist-suite", "review-suite", "review", "record-feedback", "promote"]) {
       expect(output).toContain(command);
     }
   });

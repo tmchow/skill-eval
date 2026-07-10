@@ -66,7 +66,7 @@ Complete run artifacts live outside the target repository:
 
 They include frozen source and fixture hashes, host versions and effective arguments, credential-redacted Claude/Codex JSONL, final messages, outputs, deterministic and transcript-aware grades, anonymous judge rubrics, trigger results, statistical benchmarks, sealed decisions, and promotion backups.
 
-Common credential patterns and values from secret-bearing environment variables are redacted before event, stderr, or final-output artifacts are persisted. Human review exports can be ingested as comparison-scoped evidence when anonymous agents cannot resolve a subjective case; objective and held-out gates still apply.
+Common credential patterns and values from secret-bearing environment variables are redacted before event, stderr, or final-output artifacts are persisted. When anonymous agents cannot resolve a subjective case, a display-only localhost review opens in the available browser and the active harness collects the decision directly; objective and held-out gates still apply.
 
 Calibrated reusable suites may be persisted at:
 

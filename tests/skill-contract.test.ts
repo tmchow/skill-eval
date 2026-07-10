@@ -27,4 +27,16 @@ describe("runtime skill contract", () => {
     expect(skill).not.toContain("${CLAUDE_SKILL_DIR}");
     expect(skill).not.toContain("${CODEX_HOME}");
   });
+
+  test("keeps human review display-only and native to the active harness", async () => {
+    const skill = await readFile(resolve(root, "skills/skill-eval/SKILL.md"), "utf8");
+    const review = await readFile(resolve(root, "skills/skill-eval/references/human-review.md"), "utf8");
+    expect(skill).toContain("`references/human-review.md`");
+    expect(review).toContain('bun "$SKILL_DIR/scripts/review-server.js" start');
+    expect(review).toContain("native blocking question");
+    expect(review).toContain("display-only");
+    expect(review).toContain("record-feedback");
+    expect(review).not.toContain("Export decision");
+    expect(review).not.toContain("skill-eval-feedback.json");
+  });
 });

@@ -90,9 +90,9 @@
 - Test: `tests/review.test.ts`
 - Test: `tests/eval-review.test.ts`
 
-- [ ] Generate a static review page with anonymous outputs, text/image/PDF/XLSX rendering, benchmark evidence, agent judgments, and structured feedback export.
+- [ ] Generate a read-only review page with anonymous outputs, text/image/PDF/XLSX rendering, benchmark evidence, and agent judgments; collect decisions through the active harness and record them directly.
 - [ ] Generate an optional suite-review page for editing trigger labels and reviewing behavior-case purposes and expectations before freezing.
-- [ ] Keep both pages static and unopened unless the user explicitly requests them or agent adjudication remains unresolved.
+- [ ] Keep both pages static. Serve the human review at a lifecycle-managed localhost URL only when the user requests it or agent adjudication remains unresolved.
 
 ### Task 6: Reproducibility, Host Metrics, And Runtime Contract
 

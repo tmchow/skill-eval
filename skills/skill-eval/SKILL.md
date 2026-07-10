@@ -124,15 +124,9 @@ Trigger gains never excuse a behavioral regression.
 
 ## 6. Resolve Disputes
 
-Read the sealed benchmarks, analyzer notes, grades, judge rubrics, and raw artifacts. Generate the review page only when anonymous agents genuinely disagree on a subjective decision or the user asks:
+Read the sealed benchmarks, analyzer notes, grades, judge rubrics, and raw artifacts. Generate the review page only when anonymous agents genuinely disagree on a subjective decision or the user asks. Read `references/human-review.md` now and follow it.
 
-```bash
-SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" review --run-dir "<run-dir>"
-```
-
-The static page keeps outputs anonymous, renders inspectable artifacts, shows decision-relevant benchmark evidence, and exports structured feedback. Map a human A/B decision through the separately stored label map; never reveal labels before review.
-
-When the user exports feedback, read `references/human-review.md` and follow it. Human feedback adjudicates only the matching anonymous comparisons; it never edits an existing benchmark or waives objective gates.
+The page is a read-only evidence viewer served at a temporary localhost URL. Collect each decision through the current harness's native interaction capability and record it directly as evaluation evidence. Never expose version labels before the user answers. Human judgment adjudicates only the matching anonymous comparison; it never edits an existing benchmark or waives objective gates.
 
 ## 7. Report And Promote
 

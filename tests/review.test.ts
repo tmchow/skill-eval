@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { generateReview } from "../skills/skill-eval/scripts/lib/review.ts";
 import { writeJson } from "../skills/skill-eval/scripts/lib/json.ts";
 
-test("generates an anonymous artifact review with benchmark and feedback export", async () => {
+test("generates a read-only anonymous review and returns safe case descriptors", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "skill-eval-review-"));
   const judgeDir = join(runDir, "judge");
   for (const label of ["A", "B"]) {
@@ -25,9 +25,19 @@ test("generates an anonymous artifact review with benchmark and feedback export"
   expect(html).toContain("Anonymous output A");
   expect(html).toContain("A answer");
   expect(html).toContain("data:image/png;base64");
-  expect(html).toContain("Benchmark evidence");
-  expect(html).toContain("<strong>codex:</strong> B.");
-  expect(html).toContain("Export decision");
-  expect(html).toContain("reviews.every(review=>review.winner)?'complete':'incomplete'");
+  expect(html).toContain("Cross-model judgment");
+  expect(html).toContain("Judgment");
+  expect(html).toContain("Output A");
+  expect(html).toContain("Output B");
+  expect(html).toContain("Evidence");
+  expect(html).not.toContain("Export decision");
+  expect(html).not.toContain("skill-eval-feedback.json");
+  expect(html).not.toContain('type="radio"');
+  expect(html).not.toContain("<textarea");
   expect(html).not.toContain("left_version");
+  expect(generated.reviews).toHaveLength(1);
+  expect(generated.reviews[0]).toMatchObject({ eval_id: "case", executor_host: "codex", repetition: 1 });
+  expect(generated.reviews[0]?.case_id).toMatch(/^review-[a-f0-9]{12}$/);
+  expect(JSON.stringify(generated.reviews)).not.toContain("left");
+  expect(JSON.stringify(generated.reviews)).not.toContain("right");
 });

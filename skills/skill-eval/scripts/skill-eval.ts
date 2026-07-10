@@ -6,7 +6,7 @@ import { sealDecision } from "./lib/decision.ts";
 import { optimizeDescriptions } from "./lib/description-optimizer.ts";
 import { runMatrix } from "./lib/executor.ts";
 import { generateEvalReview } from "./lib/eval-review.ts";
-import { ingestHumanFeedback } from "./lib/human-feedback.ts";
+import { recordHumanFeedback } from "./lib/human-feedback.ts";
 import { runBlindJudges } from "./lib/judges.ts";
 import { runModelGraders } from "./lib/model-grader.ts";
 import { certifyCandidate, optimizeBehavior } from "./lib/optimizer.ts";
@@ -17,7 +17,7 @@ import { runTriggerSuite } from "./lib/triggers.ts";
 import type { HostName } from "./lib/types.ts";
 import { addVersion, persistSuite, prepareRun } from "./lib/workspace.ts";
 
-const commands = ["preflight", "prepare", "add-version", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "decide", "optimize", "optimize-description", "certify", "persist-suite", "review-suite", "review", "ingest-feedback", "promote"] as const;
+const commands = ["preflight", "prepare", "add-version", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "decide", "optimize", "optimize-description", "certify", "persist-suite", "review-suite", "review", "record-feedback", "promote"] as const;
 type Command = typeof commands[number];
 
 const allowedOptions: Record<Command, Set<string>> = {
@@ -37,11 +37,11 @@ const allowedOptions: Record<Command, Set<string>> = {
   "persist-suite": new Set(["run-dir"]),
   "review-suite": new Set(["suite", "output"]),
   review: new Set(["run-dir", "output", "all"]),
-  "ingest-feedback": new Set(["run-dir", "feedback", "feedback-id"]),
+  "record-feedback": new Set(["run-dir", "case-id", "winner", "reason", "feedback-id"]),
   promote: new Set(["run-dir", "decision", "policy-allows-commit", "commit-message", "protected-branch"]),
 };
 
-const help = `skill-eval - reproducible cross-harness skill evaluation\n\nCommands:\n  preflight      Check dependencies, authentication, target, and host coverage\n  prepare        Freeze suite, fixtures, HEAD anchor, and authored candidate\n  add-version    Add one isolated challenger snapshot\n  run            Execute a partitioned host x version x eval matrix\n  grade          Apply deterministic expectations to matrix artifacts\n  grade-model    Grade qualitative expectations from anonymous artifacts and events\n  judge          Run repetition-aware blind qualitative A/B comparisons\n  trigger        Measure project-local skill discovery\n  benchmark      Aggregate variance, preference, cost, and size deltas\n  decide         Seal complete anchor/incumbent evidence for one winner\n  optimize       Run or resume the evidence-driven behavior revision loop\n  optimize-description  Run held-out-selected trigger description optimization\n  certify        Rerun complete behavior gates for a selected version\n  persist-suite  Save a calibrated suite under .skill-eval/<skill>/\n  review-suite   Generate an optional editable suite review page\n  review         Generate anonymous artifact review for disputed cases\n  ingest-feedback  Map completed anonymous human review into evidence\n  promote        Apply a sealed winner and optionally create one commit\n\nRun a command with explicit --key value options. Every command emits JSON.\n`;
+const help = `skill-eval - reproducible cross-harness skill evaluation\n\nCommands:\n  preflight      Check dependencies, authentication, target, and host coverage\n  prepare        Freeze suite, fixtures, HEAD anchor, and authored candidate\n  add-version    Add one isolated challenger snapshot\n  run            Execute a partitioned host x version x eval matrix\n  grade          Apply deterministic expectations to matrix artifacts\n  grade-model    Grade qualitative expectations from anonymous artifacts and events\n  judge          Run repetition-aware blind qualitative A/B comparisons\n  trigger        Measure project-local skill discovery\n  benchmark      Aggregate variance, preference, cost, and size deltas\n  decide         Seal complete anchor/incumbent evidence for one winner\n  optimize       Run or resume the evidence-driven behavior revision loop\n  optimize-description  Run held-out-selected trigger description optimization\n  certify        Rerun complete behavior gates for a selected version\n  persist-suite  Save a calibrated suite under .skill-eval/<skill>/\n  review-suite   Generate an optional editable suite review page\n  review         Generate anonymous artifact review for disputed cases\n  record-feedback  Record one native-harness human decision as evidence\n  promote        Apply a sealed winner and optionally create one commit\n\nRun a command with explicit --key value options. Every command emits JSON.\n`;
 
 function parse(args: string[]): { command: string; options: Map<string, string[]> } {
   const command = args.shift() ?? "--help";
@@ -100,6 +100,12 @@ function models(options: Map<string, string[]>): Partial<Record<HostName, string
   return { ...(option(options, "claude-model", false) ? { claude: option(options, "claude-model", false)! } : {}), ...(option(options, "codex-model", false) ? { codex: option(options, "codex-model", false)! } : {}) };
 }
 
+function reviewWinner(options: Map<string, string[]>): "A" | "B" | "TIE" {
+  const value = option(options, "winner")!.toUpperCase();
+  if (!["A", "B", "TIE"].includes(value)) throw new Error("--winner must be A, B, or TIE");
+  return value as "A" | "B" | "TIE";
+}
+
 async function main(): Promise<unknown> {
   const parsed = parse(process.argv.slice(2));
   if (["--help", "help", "-h"].includes(parsed.command)) return help;
@@ -140,8 +146,8 @@ async function main(): Promise<unknown> {
       return generateEvalReview(option(o, "suite")!, option(o, "output", false));
     case "review":
       return generateReview(option(o, "run-dir")!, option(o, "output", false), option(o, "all", false) === "true");
-    case "ingest-feedback":
-      return ingestHumanFeedback({ runDir: option(o, "run-dir")!, feedbackPath: option(o, "feedback")!, feedbackId: option(o, "feedback-id")! });
+    case "record-feedback":
+      return recordHumanFeedback({ runDir: option(o, "run-dir")!, caseId: option(o, "case-id")!, winner: reviewWinner(o), reason: option(o, "reason", false), feedbackId: option(o, "feedback-id", false) });
     case "promote":
       return promoteVersion({ runDir: option(o, "run-dir")!, decisionId: option(o, "decision")!, policyAllowsCommit: option(o, "policy-allows-commit", false) === "true", commitMessage: option(o, "commit-message", false), protectedBranches: o.get("protected-branch") });
   }
