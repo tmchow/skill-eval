@@ -39,7 +39,7 @@ const allowedOptions: Record<Command, Set<string>> = {
   grade: new Set(["run-dir"]),
   "grade-model": new Set(["run-dir", "attempts", "grading-id", "grader-hosts", "timeout-ms", "concurrency", "claude-model", "codex-model"]),
   judge: new Set(["run-dir", "left", "right", "attempts", "comparison-id", "judge-hosts", "timeout-ms", "concurrency", "seed", "claude-model", "codex-model"]),
-  trigger: new Set(["run-dir", "version", "hosts", "repetitions", "timeout-ms", "concurrency", "attempt-id", "partition", "queries", "claude-model", "codex-model", "max-model-calls", "max-elapsed-ms"]),
+  trigger: new Set(["run-dir", "version", "hosts", "repetitions", "timeout-ms", "concurrency", "attempt-id", "partition", "queries", "resume", "claude-model", "codex-model", "max-model-calls", "max-elapsed-ms"]),
   benchmark: new Set(["run-dir", "left", "right", "attempts", "comparison-id", "judgment-comparison-id", "minimum-effect"]),
   compare: new Set(["run-dir", "left", "right", "label", "hosts", "judge-hosts", "repetitions", "executor-timeout-ms", "grader-timeout-ms", "judge-timeout-ms", "claude-model", "codex-model"]),
   decide: new Set(["run-dir", "winner", "anchor-benchmark", "incumbent-benchmark", "decision-id"]),
@@ -159,7 +159,7 @@ async function main(): Promise<unknown> {
     case "judge":
       return runBlindJudges({ runDir: option(o, "run-dir")!, left: option(o, "left")!, right: option(o, "right")!, executionAttemptIds: list(o, "attempts"), comparisonId: option(o, "comparison-id", false), judgeHosts: hosts(o, "judge-hosts"), timeoutMs: numberOption(o, "timeout-ms", 300_000), concurrency: numberOption(o, "concurrency", 2), seed: option(o, "seed", false), models: models(o) });
     case "trigger":
-      return runTriggerSuite({ runDir: option(o, "run-dir")!, version: option(o, "version")!, hosts: hosts(o), repetitions: numberOption(o, "repetitions", 3), timeoutMs: numberOption(o, "timeout-ms", 60_000), concurrency: numberOption(o, "concurrency", 6), attemptId: option(o, "attempt-id", false), partition: partition(o, true), queryIds: o.has("queries") ? list(o, "queries") : undefined, models: models(o), limits: limits(o) });
+      return runTriggerSuite({ runDir: option(o, "run-dir")!, version: option(o, "version")!, hosts: hosts(o), repetitions: numberOption(o, "repetitions", 3), timeoutMs: numberOption(o, "timeout-ms", 60_000), concurrency: numberOption(o, "concurrency", 6), attemptId: option(o, "attempt-id", false), partition: partition(o, true), queryIds: o.has("queries") ? list(o, "queries") : undefined, models: models(o), limits: limits(o), resume: option(o, "resume", false) === "true" });
     case "benchmark":
       return buildBenchmark({ runDir: option(o, "run-dir")!, left: option(o, "left")!, right: option(o, "right")!, attemptIds: list(o, "attempts"), comparisonId: option(o, "comparison-id", false), judgmentComparisonId: option(o, "judgment-comparison-id", false), minimumEffect: numberOption(o, "minimum-effect", 0.05) });
     case "compare":

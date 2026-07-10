@@ -82,6 +82,16 @@ describe("skill-eval CLI", () => {
     expect(JSON.parse(result.stderr.toString()).error).toContain("missing --partition");
   });
 
+  test("accepts resume for trigger attempts", async () => {
+    const runDir = await mkdtemp(join(tmpdir(), "skill-eval-trigger-cli-resume-"));
+    const result = run(["trigger", "--run-dir", runDir, "--version", "authored", "--hosts", "codex", "--partition", "training", "--resume"]);
+    const error = JSON.parse(result.stderr.toString()).error as string;
+
+    expect(result.exitCode).toBe(1);
+    expect(error).not.toContain("unknown option for trigger: --resume");
+    expect(error).toContain("run.json");
+  });
+
   test("rejects options that do not belong to a command", () => {
     const result = run(["grade", "--run-dir", "/tmp/run", "--bogus", "value"]);
     expect(result.exitCode).toBe(1);
