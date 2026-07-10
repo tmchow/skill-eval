@@ -170,20 +170,20 @@ The deterministic engine indexes facts. The agent writes the reasoning checkpoin
 ## How It Works
 
 ```mermaid
-flowchart LR
-    A[Repository skill source] --> B[Infer baseline and desired outcome]
-    B --> C[Confirm bounded measurement plan]
-    C --> D[Freeze source, baseline, suite, and fixtures]
-    D --> E1[Claude Code runs]
-    D --> E2[Codex runs]
-    E1 --> F[Objective checks and anonymous grading]
-    E2 --> F
-    F --> G[Blind comparison and benchmark]
-    G -->|Not better| H[Revise from training evidence]
-    H --> D
-    G -->|Promotable| I[Held-out certification]
-    I --> J[Hash-sealed decision]
-    J --> K[Apply winner when requested]
+flowchart TD
+    A["1. Understand the change<br/>and choose the baseline"]
+    B["2. Confirm the<br/>measurement plan"]
+    C["3. Freeze source, suite,<br/>and realistic fixtures"]
+    D["4. Run baseline and current<br/>in Claude Code and/or Codex"]
+    E["5. Check facts, grade outputs,<br/>and compare blindly"]
+    F{"Measured<br/>improvement?"}
+    G["Revise from<br/>training evidence"]
+    H["Certify on<br/>held-out cases"]
+    I["Seal and apply the winner<br/>only when requested"]
+
+    A --> B --> C --> D --> E --> F
+    F -->|No| G --> C
+    F -->|Yes| H --> I
 ```
 
 The adaptive work stays with the agent: understanding the change, designing realistic environments, interpreting disagreement, and deciding the next revision. The engine owns reproducibility: snapshots, execution, assertions, identities, hashes, resume state, and promotion guards.
