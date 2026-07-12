@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { eventShowsTrigger, runTriggerSuite, summarizeCrossHostTriggers, summarizeTriggers } from "../skills/skill-eval/scripts/lib/triggers.ts";
+import { buildClaudeTriggerArgs, buildCodexTriggerArgs, eventShowsTrigger, runTriggerSuite, summarizeCrossHostTriggers, summarizeTriggers } from "../skills/skill-eval/scripts/lib/triggers.ts";
 import { hashTree, writeJson } from "../skills/skill-eval/scripts/lib/json.ts";
 import type { RunState } from "../skills/skill-eval/scripts/lib/types.ts";
 
@@ -13,17 +13,17 @@ test("trigger suite measures precision and recall from raw prompts", async () =>
   await writeFile(join(skillPath, "SKILL.md"), "---\nname: demo\ndescription: Use when evaluating skills.\n---\n# Demo\n");
   const now = new Date().toISOString();
   const state: RunState = {
-    schema_version: 1, run_id: "r", run_dir: runDir, created_at: now, target_path: skillPath, repo_root: runDir, skill_name: "demo",
+    schema_version: 2, run_id: "r", run_dir: runDir, created_at: now, target_path: skillPath, repo_root: runDir, skill_name: "demo",
     invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "none" }, versions: { authored: { path: skillPath, parent: null, created_at: now } },
     hashes: { versions: { anchor: null, authored: await hashTree(skillPath) }, fixtures: {}, suite: "s" }, git: { initial_clean: false, initial_status: "", branch: null, head: null, target_tracked: false },
   };
   await writeJson(join(runDir, "run.json"), state);
   await writeJson(join(runDir, "suite.json"), {
-    schema_version: 1, skill_name: "demo", hypothesis: "trigger", evals: [{ id: "behavior", name: "Behavior", purpose: "improvement", severity: "quality", prompt: "task", expectations: [{ id: "q", text: "q", severity: "quality" }] }],
+    schema_version: 2, claim_class: "conformance", skill_name: "demo", hypothesis: "trigger", evals: [{ id: "behavior", name: "Behavior", purpose: "improvement", severity: "quality", prompt: "task", expectations: [{ id: "q", text: "q", severity: "quality", evidence_role: "outcome" }] }],
     trigger_queries: [
       { id: "positive", query: "Evaluate this skill", should_trigger: true },
       { id: "negative", query: "Evaluate this stock", should_trigger: false },
-      { id: "held-out", query: "Benchmark this skill later", should_trigger: true, holdout: true },
+      { id: "validation", query: "Benchmark this skill later", should_trigger: true, validation: true },
     ],
   });
   const prompts: string[] = [];
@@ -42,13 +42,13 @@ test("trigger suite measures precision and recall from raw prompts", async () =>
   expect(summary.false_trigger_rate).toBe(0);
   expect(results.every((result) => result.attempt_id === "training" && result.partition === "training")).toBe(true);
 
-  const holdout = await runTriggerSuite({
-    runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "holdout", partition: "holdout",
+  const validation = await runTriggerSuite({
+    runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "validation", partition: "validation",
     probe: async (_host, request) => ({ triggered: request.query.includes("this skill"), duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }),
   });
-  expect(holdout.map((item) => item.query_id)).toEqual(["held-out"]);
+  expect(validation.map((item) => item.query_id)).toEqual(["validation"]);
   await expect(runTriggerSuite({
-    runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "holdout", partition: "holdout",
+    runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "validation", partition: "validation",
     probe: async () => ({ triggered: false, duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }),
   })).rejects.toThrow("attempt id already exists");
   await mkdir(join(runDir, "artifacts", "triggers", "interrupted"), { recursive: true });
@@ -58,20 +58,42 @@ test("trigger suite measures precision and recall from raw prompts", async () =>
   })).rejects.toThrow("artifact directory already exists");
 });
 
-test("recognizes Claude Skill-tool invocation without requiring a SKILL.md path", () => {
+test("recognizes only the isolated Claude probe skill identity", () => {
   const event = {
     type: "assistant",
-    message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "probe-plugin:live-probe" } }] },
+    message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "skill-eval-probe:live-probe" } }] },
   };
   expect(eventShowsTrigger("claude", event, "live-probe", "/tmp/source/live-probe")).toBe(true);
+  const sibling = {
+    type: "assistant",
+    message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "installed-plugin:live-probe" } }] },
+  };
+  expect(eventShowsTrigger("claude", sibling, "live-probe", "/tmp/source/live-probe")).toBe(false);
 });
 
 test("recognizes Codex reading the isolated SKILL.md", () => {
   const event = {
     type: "item.completed",
-    item: { type: "command_execution", command: "sed -n 1,200p /tmp/home/skills/live-probe/SKILL.md" },
+    item: { type: "command_execution", command: "sed -n 1,200p /tmp/source/live-probe/SKILL.md" },
   };
   expect(eventShowsTrigger("codex", event, "live-probe", "/tmp/source/live-probe")).toBe(true);
+  const installed = {
+    type: "item.completed",
+    item: { type: "command_execution", command: "cat /Users/test/.agents/skills/live-probe/SKILL.md" },
+  };
+  expect(eventShowsTrigger("codex", installed, "live-probe", "/tmp/source/live-probe")).toBe(false);
+});
+
+test("trigger probes pin strong default models and reasoning effort", () => {
+  const claude = buildClaudeTriggerArgs("/tmp/plugin");
+  expect(claude[claude.indexOf("--model") + 1]).toBe("claude-opus-4-8");
+  expect(claude[claude.indexOf("--effort") + 1]).toBe("high");
+  expect(buildClaudeTriggerArgs("/tmp/plugin", "opus-custom")).toContain("opus-custom");
+
+  const codex = buildCodexTriggerArgs("/tmp/work");
+  expect(codex[codex.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
+  expect(codex).toContain('model_reasoning_effort="high"');
+  expect(buildCodexTriggerArgs("/tmp/work", "codex-custom")).toContain("codex-custom");
 });
 
 test("checkpoints completed trigger probes and resumes only missing work", async () => {
@@ -81,13 +103,13 @@ test("checkpoints completed trigger probes and resumes only missing work", async
   await writeFile(join(skillPath, "SKILL.md"), "---\nname: demo\ndescription: Use when evaluating skills.\n---\n# Demo\n");
   const now = new Date().toISOString();
   const state: RunState = {
-    schema_version: 1, run_id: "r", run_dir: runDir, created_at: now, target_path: skillPath, repo_root: runDir, skill_name: "demo",
+    schema_version: 2, run_id: "r", run_dir: runDir, created_at: now, target_path: skillPath, repo_root: runDir, skill_name: "demo",
     invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "none" }, versions: { authored: { path: skillPath, parent: null, created_at: now } },
     hashes: { versions: { anchor: null, authored: await hashTree(skillPath) }, fixtures: {}, suite: "s" }, git: { initial_clean: false, initial_status: "", branch: null, head: null, target_tracked: false },
   };
   await writeJson(join(runDir, "run.json"), state);
   await writeJson(join(runDir, "suite.json"), {
-    schema_version: 1, skill_name: "demo", hypothesis: "trigger", evals: [],
+    schema_version: 2, claim_class: "conformance", skill_name: "demo", hypothesis: "trigger", evals: [],
     trigger_queries: [
       { id: "one", query: "one", should_trigger: true },
       { id: "two", query: "two", should_trigger: false },
@@ -118,7 +140,7 @@ test("checkpoints completed trigger probes and resumes only missing work", async
 
 test("surfaces cross-host disagreement separately from aggregate trigger accuracy", () => {
   const result = (host: "claude" | "codex", repetition: number, triggered: boolean) => ({
-    schema_version: 1 as const, attempt_id: "a", partition: "holdout" as const, created_at: new Date().toISOString(), host,
+    schema_version: 2 as const, attempt_id: "a", partition: "validation" as const, created_at: new Date().toISOString(), host,
     version: "authored", query_id: "adjacent", should_trigger: false, repetition, triggered, duration_ms: 1, event_path: "events", error: null,
   });
   const summary = summarizeCrossHostTriggers([

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-`skill-eval` is a portable Claude Code and Codex plugin for evaluating and iteratively improving agent skills without installing the skill under test. Its Bun/TypeScript engine freezes baselines, fixtures, and held-out suites; executes isolated skill snapshots through available hosts; grades artifacts and transcripts; runs blind cross-model comparisons; optimizes behavior and triggering; and promotes only a hash-sealed winner.
+`skill-eval` is a portable Claude Code and Codex plugin for evaluating agent skills without installing or mutating the skill under test. Its Bun/TypeScript engine freezes baselines, fixtures, and suites; executes isolated skill snapshots through available hosts; grades outcome and mechanism evidence; runs blind cross-model comparisons; and seals hash-bound evidence claims. The evaluating agent diagnoses failures and advises; the caller owns revisions.
 
 This is a single-package repository. `AGENTS.md` is the canonical repository instruction file; `CLAUDE.md` is a compatibility symlink.
 
@@ -10,14 +10,13 @@ This is a single-package repository. `AGENTS.md` is the canonical repository ins
 
 - `skills/skill-eval/SKILL.md`: runtime orchestration contract loaded by agent harnesses.
 - `skills/skill-eval/scripts/skill-eval.ts`: JSON-emitting CLI entry point.
-- `skills/skill-eval/scripts/lib/`: evaluation, execution, grading, optimization, review, and promotion modules.
+- `skills/skill-eval/scripts/lib/`: evaluation, execution, grading, review, campaign, and evidence modules.
 - `skills/skill-eval/references/`: conditional runtime guidance and isolated agent prompt assets.
 - `skills/skill-eval/agents/openai.yaml`: Codex skill-list metadata.
 - `tests/`: Bun tests for behavior, integrity boundaries, packaging, and CLI contracts.
 - `.claude-plugin/`, `.codex-plugin/`, `.agents/plugins/`: Claude and Codex plugin and marketplace metadata.
-- `docs/plans/`: design and implementation records.
 - `docs/solutions/`: searchable architecture and workflow learnings, organized by category with YAML frontmatter.
-- `CONCEPTS.md`: shared vocabulary for evaluation evidence, lifecycle, and promotion concepts.
+- `CONCEPTS.md`: shared vocabulary for evaluation evidence and campaign lifecycle.
 
 ## Setup And Validation
 
@@ -63,14 +62,14 @@ CI runs `bun install --frozen-lockfile` and `bun run validate` on Ubuntu for pus
 These are correctness boundaries, not implementation preferences:
 
 - Never install the target skill to evaluate it. Execute frozen snapshots by explicit path in isolated fixtures.
-- Keep training and held-out evidence separate. Revisers and description improvers must not receive held-out prompts, artifacts, or failures.
-- Keep the fixed anchor immutable. For tracked skills it is the target directory at Git `HEAD`; for new skills it is the no-skill baseline.
-- Never reuse attempt, comparison, feedback, or decision identifiers to overwrite evidence.
+- Keep training and validation evidence separate. Generalization claims require outcome evidence in both partitions.
+- Keep the selected fixed anchor immutable. It may be `HEAD`, a branch/PR merge-base, an explicit ref, or no-skill when the target is absent there.
+- Never reuse attempt, comparison, feedback, claim, or checkpoint identifiers to overwrite evidence.
 - Keep anonymous A/B labels and version mappings separate. Do not expose version identity before a human decision is recorded.
 - Treat executor self-report as untrusted. Observable artifacts, transcripts, deterministic checks, and independent judgments provide evidence.
 - Human review is display-only in the browser. Collect decisions through the active harness and record one immutable decision per review case.
-- Promotion must revalidate suite, fixture, benchmark, version, target, and decision hashes. Never promote from a summary alone.
-- The promotion workflow must never push or merge. It may create at most one local commit when repository and branch policy allow it.
+- Outcome evidence alone can create an effectiveness win. Mechanism evidence can gate a claim but must not inflate pass rates or blind preference.
+- The evaluator never edits, commits, promotes, pushes, or merges the target skill.
 - Redact credentials before persisting host events, stderr, or final output.
 
 ## Code Style

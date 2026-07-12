@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { mapLimit } from "./async.ts";
 import { gradeExecution } from "./assertions.ts";
 import { containedPath, copyTree, hashTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
-import { createHostAdapters } from "./hosts.ts";
+import { createHostAdapters, effectiveRuntimeProfile } from "./hosts.ts";
+import { assertSuiteApproved } from "./suite-critic.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
 import type { BehaviorAttemptManifest, EvidencePartition, ExecutionRecord, GradingResult, HostAdapter, HostName } from "./types.ts";
 
@@ -20,6 +21,7 @@ export interface RunMatrixOptions {
   partition?: EvidencePartition | "all";
   evalIds?: string[];
   models?: Partial<Record<HostName, string>>;
+  reasoningEfforts?: Partial<Record<HostName, string>>;
   resume?: boolean;
 }
 
@@ -28,6 +30,28 @@ interface MatrixTask {
   version: string;
   evalId: string;
   repetition: number;
+}
+
+function gitOutput(cwd: string, args: string[]): string {
+  const git = Bun.which("git");
+  if (!git) throw new Error("git-write capability requires git");
+  const result = Bun.spawnSync([git, ...args], { cwd, stdout: "pipe", stderr: "pipe" });
+  if (result.exitCode !== 0) throw new Error(`git-write fixture is not a usable repository: ${result.stderr.toString().trim()}`);
+  return result.stdout.toString().trim();
+}
+
+async function prepareGitWriteFixture(workspace: string): Promise<Record<string, string>> {
+  const metadata = join(workspace, ".git");
+  if (!(await stat(metadata).catch(() => null))?.isDirectory()) throw new Error("git-write capability requires a fixture with a .git directory");
+  for (const remote of gitOutput(workspace, ["remote"]).split("\n").filter(Boolean)) {
+    for (const url of gitOutput(workspace, ["remote", "get-url", "--all", remote]).split("\n").filter(Boolean)) {
+      if (/^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^[^/]+@[^:]+:/.test(url)) throw new Error("git-write fixture remotes must stay inside the disposable workspace");
+      containedPath(workspace, url);
+    }
+  }
+  const relocated = join(workspace, ".skill-eval-git");
+  await rename(metadata, relocated);
+  return { GIT_DIR: relocated, GIT_WORK_TREE: workspace };
 }
 
 function attemptId(value?: string): string {
@@ -55,11 +79,45 @@ function executionDir(runDir: string, attemptId: string, task: MatrixTask): stri
   return join(runDir, "artifacts", "runs", attemptId, task.host, task.evalId, task.version, `run-${task.repetition}`);
 }
 
+function targetSkill(value: unknown, skillName: string): boolean {
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().replace(/^\//, "").replace(/^\$/, "");
+  return normalized === skillName || normalized.endsWith(`:${skillName}`);
+}
+
+function invokesTargetSkill(item: unknown, skillName: string): boolean {
+  if (!item || typeof item !== "object") return false;
+  const value = item as Record<string, any>;
+  const type = String(value.type ?? "").toLowerCase();
+  const name = String(value.name ?? value.tool ?? "").toLowerCase();
+  if (!["tool_use", "function_call", "mcp_tool_call"].includes(type) || !name.includes("skill")) return false;
+  const input = value.input ?? value.arguments ?? {};
+  return targetSkill(input?.skill, skillName) || targetSkill(input?.name, skillName) || targetSkill(input?.command, skillName);
+}
+
+async function usedWrongSkillSource(eventPath: string, skillName: string, allowedPath: string | null): Promise<boolean> {
+  const raw = (await readFile(eventPath, "utf8")).replaceAll("\\", "/");
+  const escaped = skillName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const allowed = allowedPath ? `${allowedPath.replaceAll("\\", "/")}/SKILL.md` : null;
+  if ([...raw.matchAll(new RegExp(`[^\\s"']*/skills/${escaped}/SKILL\\.md`, "g"))].some((match) => match[0] !== allowed)) return true;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line);
+      if (invokesTargetSkill(event, skillName)) return true;
+      if (Array.isArray(event.message?.content) && event.message.content.some((item: unknown) => invokesTargetSkill(item, skillName))) return true;
+      if (invokesTargetSkill(event.item, skillName)) return true;
+    } catch { /* malformed events fail the run separately */ }
+  }
+  return false;
+}
+
 export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRecord[]> {
   if (options.hosts.length === 0) throw new Error("behavior execution requires at least one host");
   if (options.versions.length === 0) throw new Error("behavior execution requires at least one version");
   const runDir = resolve(options.runDir);
   await verifyRunIntegrity(runDir);
+  await assertSuiteApproved(runDir);
   const state = await loadRun(runDir);
   const suite = await loadSuite(runDir);
   const id = attemptId(options.attemptId);
@@ -73,7 +131,7 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
   const selectedEvals = suite.evals.filter((evalCase) => {
     if (options.evalIds && !options.evalIds.includes(evalCase.id)) return false;
     if (partition === "all") return true;
-    return partition === (evalCase.holdout ? "holdout" : "training");
+    return partition === (evalCase.validation ? "validation" : "training");
   });
   if (selectedEvals.length === 0) throw new Error(`no ${partition} behavior evals selected`);
   for (const host of options.hosts) {
@@ -88,7 +146,7 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
   const attemptRoot = join(runDir, "artifacts", "runs", id);
   const manifestPath = join(attemptRoot, "attempt.json");
   const manifest: BehaviorAttemptManifest = {
-    schema_version: 1, attempt_id: id, kind: "behavior", status: "started", created_at: new Date().toISOString(),
+    schema_version: 2, attempt_id: id, kind: "behavior", status: "started", created_at: new Date().toISOString(),
     partition, versions: [...options.versions], hosts: [...options.hosts], eval_ids: selectedEvals.map((item) => item.id),
     repetitions: options.repetitions ?? 1, planned_records: tasks.length, record_count: 0,
   };
@@ -165,6 +223,12 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
       const eventPath = join(taskDir, "events.jsonl");
       const stderrPath = join(taskDir, "stderr.txt");
       const finalPath = join(taskDir, "final.md");
+      const executionStatePath = join(taskDir, "execution-state.json");
+      const executionStartedAt = new Date().toISOString();
+      await writeJson(executionStatePath, {
+        schema_version: 2, status: "started", started_at: executionStartedAt,
+        host: task.host, version: task.version, eval_id: task.evalId, repetition: task.repetition,
+      });
       const adapter = adapters[task.host];
       if (!adapter) throw new Error(`missing adapter: ${task.host}`);
       const fixtureBin = join(workspace, "bin");
@@ -172,6 +236,9 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
       try {
         if ((await stat(fixtureBin)).isDirectory()) taskEnv = { PATH: `${fixtureBin}${delimiter}${process.env.PATH ?? ""}` };
       } catch { /* fixtures do not need a bin directory */ }
+      if (suite.environment?.capabilities?.includes("git-write")) {
+        taskEnv = { ...taskEnv, ...await prepareGitWriteFixture(workspace) };
+      }
       const result = await adapter.execute({
         cwd: workspace,
         prompt: executorPrompt(skillPath, evalCase.prompt, outputDir),
@@ -181,16 +248,35 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
         timeoutMs: options.timeoutMs ?? 10 * 60_000,
         env: taskEnv,
         model: options.models?.[task.host],
+        reasoningEffort: options.reasoningEfforts?.[task.host],
+        role: "behavior",
+        capabilities: ["skill-source-injection", "artifact-write", ...(suite.environment?.capabilities ?? [])],
+        contextMode: suite.environment?.fidelity ?? "isolated",
       });
       await writeFile(join(outputDir, "final.md"), result.final_text);
       const hashAfter = skillPath ? await hashTree(skillPath) : null;
       const sourceMutated = hashBefore !== hashAfter;
+      const wrongSkillSource = await usedWrongSkillSource(eventPath, state.skill_name, skillPath);
       if (sourceMutated && result.exit_code === 0) result.exit_code = 86;
       if (result.malformed_events > 0 && result.exit_code === 0) result.exit_code = 87;
+      if (wrongSkillSource && result.exit_code === 0) result.exit_code = 88;
+      const runtimeProfile = result.runtime_profile ?? effectiveRuntimeProfile(task.host, {
+        cwd: workspace,
+        prompt: "",
+        eventPath,
+        stderrPath,
+        finalPath,
+        timeoutMs: options.timeoutMs ?? 10 * 60_000,
+        model: options.models?.[task.host],
+        reasoningEffort: options.reasoningEfforts?.[task.host],
+        role: "behavior",
+        capabilities: ["skill-source-injection", "artifact-write", ...(suite.environment?.capabilities ?? [])],
+        contextMode: suite.environment?.fidelity ?? "isolated",
+      });
       const record: ExecutionRecord = {
-        schema_version: 1,
+        schema_version: 2,
         attempt_id: id,
-        partition: evalCase.holdout ? "holdout" : "training",
+        partition: evalCase.validation ? "validation" : "training",
         created_at: new Date().toISOString(),
         host: task.host,
         eval_id: task.evalId,
@@ -202,11 +288,17 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
         skill_hash_before: hashBefore,
         skill_hash_after: hashAfter,
         source_mutated: sourceMutated,
+        wrong_skill_source: wrongSkillSource,
         executor_exclusions: [...(state.executor_exclusions ?? [])],
+        runtime_profile: runtimeProfile,
         host_result: result,
       };
       await writeJson(join(taskDir, "execution.json"), record);
       await persistRecord(record);
+      await writeJson(executionStatePath, {
+        schema_version: 2, status: "complete", started_at: executionStartedAt, completed_at: new Date().toISOString(),
+        host: task.host, version: task.version, eval_id: task.evalId, repetition: task.repetition,
+      });
       return record;
     });
   } catch (error) {

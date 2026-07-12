@@ -31,7 +31,9 @@ Write \`outputs/live-probe.txt\` containing exactly \`skill-eval-live-ok\`.
 `);
   const suitePath = join(suiteDir, "suite.json");
   await writeFile(suitePath, JSON.stringify({
-    schema_version: 1,
+    schema_version: 2,
+    claim_class: "generalization",
+    environment: { fidelity: "isolated", external_state: [] },
     skill_name: "live-probe",
     hypothesis: "The supplied skill creates the required inspectable artifact.",
     evals: [{
@@ -40,7 +42,7 @@ Write \`outputs/live-probe.txt\` containing exactly \`skill-eval-live-ok\`.
       purpose: "improvement",
       severity: "critical",
       prompt: "Create the live probe result.",
-      expectations: [{ id: "content", text: "probe contains sentinel", severity: "critical", check: { type: "file_contains", path: "live-probe.txt", value: "skill-eval-live-ok" } }],
+      expectations: [{ id: "content", text: "probe contains sentinel", severity: "critical", evidence_role: "outcome", check: { type: "file_contains", path: "live-probe.txt", value: "skill-eval-live-ok" } }],
     }],
     trigger_queries: [{ id: "probe-trigger", query: "Please create the live probe result", should_trigger: true }],
   }));

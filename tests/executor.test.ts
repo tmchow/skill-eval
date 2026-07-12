@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMatrix } from "../skills/skill-eval/scripts/lib/executor.ts";
@@ -11,6 +11,7 @@ class FakeAdapter implements HostAdapter {
   prompts: string[] = [];
   requests: HostRequest[] = [];
   mutateSkill = false;
+  wrongSkillPath: string | null = null;
   failOnCall: number | null = null;
 
   async execute(request: HostRequest): Promise<HostResult> {
@@ -19,7 +20,9 @@ class FakeAdapter implements HostAdapter {
     this.requests.push(request);
     const skillMatch = request.prompt.match(/Exact skill snapshot: (.+)/);
     if (this.mutateSkill && skillMatch) await writeFile(join(skillMatch[1]!, "MUTATED"), "bad");
-    await writeFile(request.eventPath, '{"type":"turn.completed"}\n');
+    await writeFile(request.eventPath, this.wrongSkillPath
+      ? `${JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: `cat ${this.wrongSkillPath}` } })}\n`
+      : '{"type":"turn.completed"}\n');
     await writeFile(request.stderrPath, "");
     await writeFile(request.finalPath, "completed");
     await writeFile(join(request.cwd, "outputs", "result.txt"), "ok\n");
@@ -42,26 +45,32 @@ async function preparedRun(): Promise<{ runDir: string; adapter: FakeAdapter }> 
   await writeFile(join(authored, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n# Authored\n");
   await writeFile(join(anchor, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n# Anchor\n");
   await writeFile(join(runDir, "fixtures", "case", "input.txt"), "fixture\n");
+  const initialized = Bun.spawnSync(["git", "init", join(runDir, "fixtures", "case")], { stdout: "ignore", stderr: "pipe" });
+  if (initialized.exitCode !== 0) throw new Error(initialized.stderr.toString());
   await writeFile(join(runDir, "fixtures", "case", "bin", "codex"), "#!/bin/sh\nprintf fake-peer\n");
   await chmod(join(runDir, "fixtures", "case", "bin", "codex"), 0o755);
   await writeJson(join(runDir, "suite.json"), {
-    schema_version: 1, skill_name: "demo", hypothesis: "better", evals: [{
+    schema_version: 2, claim_class: "generalization", environment: { fidelity: "isolated", external_state: [] }, skill_name: "demo", hypothesis: "better", evals: [{
       id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "Do the thing.", fixture: "fixture",
-      expectations: [{ id: "result", text: "result exists", severity: "critical", check: { type: "file_exists", path: "result.txt" } }],
+      expectations: [{ id: "result", text: "result exists", severity: "critical", evidence_role: "outcome", check: { type: "file_exists", path: "result.txt" } }],
     }, {
-      id: "held-out", name: "Held out", purpose: "regression", severity: "critical", prompt: "Do the held-out thing.", holdout: true,
-      expectations: [{ id: "result", text: "result exists", severity: "critical", check: { type: "file_exists", path: "result.txt" } }],
+      id: "validation", name: "Validation", purpose: "regression", severity: "critical", prompt: "Do the validation thing.", validation: true,
+      expectations: [{ id: "result", text: "result exists", severity: "critical", evidence_role: "outcome", check: { type: "file_exists", path: "result.txt" } }],
     }],
   });
   const now = new Date().toISOString();
   const state: RunState = {
-    schema_version: 1, run_id: "run", run_dir: runDir, created_at: now, target_path: authored, repo_root: runDir,
+    schema_version: 2, run_id: "run", run_dir: runDir, created_at: now, target_path: authored, repo_root: runDir,
     skill_name: "demo", invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "git", ref: "HEAD" },
     versions: { anchor: { path: anchor, parent: null, created_at: now }, authored: { path: authored, parent: null, created_at: now } },
     hashes: { versions: { anchor: await hashTree(anchor), authored: await hashTree(authored) }, fixtures: { case: await hashTree(join(runDir, "fixtures", "case")) }, suite: "suite" },
     git: { initial_clean: false, initial_status: "", branch: "feature", head: "abc", target_tracked: true },
   };
   await writeJson(join(runDir, "run.json"), state);
+  await writeJson(join(runDir, "artifacts", "suite-critique-latest.json"), {
+    critique_dir: join(runDir, "artifacts", "suite-critiques", "test"),
+    results: [{ schema_version: 2, critic_host: "codex", verdict: "PASS", reasoning: "fixture", issues: [], valid: true, created_at: now }],
+  });
   return { runDir, adapter: new FakeAdapter() };
 }
 
@@ -76,6 +85,94 @@ describe("matrix execution", () => {
     expect(adapter.prompts[0]).not.toBe(adapter.prompts[1]);
     expect(await readFile(join(records[0]!.run_dir, "workspace", "input.txt"), "utf8")).toBe("fixture\n");
     expect(records.every((record) => !record.source_mutated)).toBe(true);
+    expect(adapter.requests.every((request) => request.contextMode === "isolated")).toBe(true);
+  });
+
+  test("passes declared environment fidelity to the host adapter", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const suite = await readJson<any>(join(runDir, "suite.json"));
+    suite.environment.fidelity = "project-context";
+    await writeJson(join(runDir, "suite.json"), suite);
+
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], repetitions: 1, timeoutMs: 1_000, adapters: { codex: adapter }, attemptId: "project-context" });
+
+    expect(adapter.requests[0]?.contextMode).toBe("project-context");
+  });
+
+  test("persists the effective behavior runtime profile with each execution", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const [record] = await runMatrix({
+      runDir,
+      versions: ["authored"],
+      hosts: ["codex"],
+      repetitions: 1,
+      adapters: { codex: adapter },
+      models: { codex: "codex-floor" },
+      reasoningEfforts: { codex: "medium" },
+      attemptId: "runtime-profile",
+    });
+
+    expect(record?.runtime_profile).toEqual({
+      role: "behavior",
+      host: "codex",
+      model: "codex-floor",
+      reasoning_effort: "medium",
+      context_mode: "isolated",
+      capabilities: ["skill-source-injection", "artifact-write"],
+    });
+  });
+
+  test("blocks non-conformance execution without a passing suite critique", async () => {
+    const { runDir, adapter } = await preparedRun();
+    await rm(join(runDir, "artifacts", "suite-critique-latest.json"));
+    await expect(runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], partition: "training", adapters: { codex: adapter } })).rejects.toThrow("suite critique");
+    expect(adapter.requests).toHaveLength(0);
+  });
+
+  test("passes an explicitly declared git-write capability to the host adapter", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const suite = await readJson<any>(join(runDir, "suite.json"));
+    suite.environment.capabilities = ["git-write"];
+    suite.evals[1].fixture = "fixture";
+    await writeJson(join(runDir, "suite.json"), suite);
+
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], repetitions: 1, timeoutMs: 1_000, adapters: { codex: adapter }, attemptId: "git-write", partition: "training" });
+
+    expect(adapter.requests[0]?.env?.GIT_DIR).toContain(".skill-eval-git");
+    expect(adapter.requests[0]?.env?.GIT_WORK_TREE).toBe(adapter.requests[0]?.cwd);
+    expect(await Bun.file(join(adapter.requests[0]!.cwd, ".git")).exists()).toBe(false);
+    expect((await stat(join(adapter.requests[0]!.cwd, ".skill-eval-git"))).isDirectory()).toBe(true);
+  });
+
+  test("fails evidence that reads an installed same-name skill", async () => {
+    const { runDir, adapter } = await preparedRun();
+    adapter.wrongSkillPath = "/Users/test/.agents/skills/demo/SKILL.md";
+
+    const [record] = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], repetitions: 1, timeoutMs: 1_000, adapters: { codex: adapter }, attemptId: "wrong-source" });
+
+    expect(record?.wrong_skill_source).toBe(true);
+    expect(record?.host_result.exit_code).toBe(88);
+  });
+
+  test("fails tool-only installed skill invocation, including a no-skill baseline", async () => {
+    const { runDir, adapter } = await preparedRun();
+    adapter.wrongSkillPath = null;
+    adapter.execute = async (request: HostRequest): Promise<HostResult> => {
+      adapter.requests.push(request);
+      await writeFile(request.eventPath, `${JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Skill", input: { skill: "plugin:demo" } }] } })}\n`);
+      await writeFile(request.stderrPath, ""); await writeFile(request.finalPath, "completed");
+      return { host: "codex", exit_code: 0, timed_out: false, malformed_events: 0, final_text: "completed", duration_ms: 1, usage: { input_tokens: null, output_tokens: null, total_tokens: null, cost_usd: null }, event_path: request.eventPath, stderr_path: request.stderrPath, final_path: request.finalPath };
+    };
+    const state = await readJson<RunState>(join(runDir, "run.json"));
+    state.anchor = { kind: "none" };
+    delete state.versions.anchor;
+    state.hashes.versions.anchor = null;
+    await writeJson(join(runDir, "run.json"), state);
+
+    const [record] = await runMatrix({ runDir, versions: ["anchor"], hosts: ["codex"], partition: "training", adapters: { codex: adapter }, attemptId: "tool-source" });
+    expect(record?.skill_path).toBeNull();
+    expect(record?.wrong_skill_source).toBe(true);
+    expect(record?.host_result.exit_code).toBe(88);
   });
 
   test("prepends fixture-local fake CLIs to the task environment", async () => {
@@ -124,15 +221,15 @@ describe("matrix execution", () => {
     await expect(runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "interrupted", adapters: { codex: adapter } })).rejects.toThrow("artifact directory already exists");
   });
 
-  test("runs training and held-out cases as separate evidence partitions", async () => {
+  test("runs training and validation cases as separate evidence partitions", async () => {
     const { runDir, adapter } = await preparedRun();
     const training = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "training", partition: "training", adapters: { codex: adapter } });
-    const holdout = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "holdout", partition: "holdout", adapters: { codex: adapter } });
+    const validation = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "validation", partition: "validation", adapters: { codex: adapter } });
 
     expect(training.map((item) => item.eval_id)).toEqual(["case"]);
     expect(training.every((item) => item.partition === "training")).toBe(true);
-    expect(holdout.map((item) => item.eval_id)).toEqual(["held-out"]);
-    expect(holdout.every((item) => item.partition === "holdout")).toBe(true);
+    expect(validation.map((item) => item.eval_id)).toEqual(["validation"]);
+    expect(validation.every((item) => item.partition === "validation")).toBe(true);
   });
 
   test("persists and grades completed arms incrementally, then resumes only missing arms", async () => {

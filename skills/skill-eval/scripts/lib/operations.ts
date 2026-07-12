@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { readJson, writeJson } from "./json.ts";
 import type { HostAdapter, HostName, HostResult } from "./types.ts";
 
-export type OperationKind = "trigger" | "comparison" | "certification" | "behavior-optimization" | "description-optimization";
+export type OperationKind = "suite-critique" | "trigger";
 export type OperationState = "active" | "complete" | "attention" | "stopped";
 
 export interface OperationLimits {
@@ -19,7 +19,7 @@ export interface OperationUsage {
 }
 
 export interface OperationRecord {
-  schema_version: 1;
+  schema_version: 2;
   operation_id: string;
   kind: OperationKind;
   status: OperationState;
@@ -30,12 +30,6 @@ export interface OperationRecord {
   pid: number;
   completed_units: number;
   planned_units: number | null;
-  iteration?: number;
-  max_iterations?: number;
-  current_candidate?: string;
-  best_candidate?: string;
-  baseline_score?: number;
-  best_score?: number;
   stop_reason?: string;
   message?: string;
   limits: OperationLimits;
@@ -47,7 +41,6 @@ export interface CreateOperationOptions {
   phase: string;
   planned_units?: number | null;
   limits?: OperationLimits;
-  max_iterations?: number;
 }
 
 function operationId(kind: OperationKind): string {
@@ -121,7 +114,7 @@ export async function createOperation(runDirInput: string, options: CreateOperat
   const path = join(runDir, "artifacts", "operations", `${id}.json`);
   const now = new Date().toISOString();
   const record: OperationRecord = {
-    schema_version: 1,
+    schema_version: 2,
     operation_id: id,
     kind: options.kind,
     status: "active",
@@ -131,7 +124,6 @@ export async function createOperation(runDirInput: string, options: CreateOperat
     pid: process.pid,
     completed_units: 0,
     planned_units: options.planned_units ?? null,
-    ...(options.max_iterations === undefined ? {} : { max_iterations: options.max_iterations }),
     limits: { ...options.limits },
     usage: { model_calls: 0, input_tokens: 0, output_tokens: 0, total_tokens: 0 },
   };

@@ -12,7 +12,7 @@ describe("plugin packaging", () => {
   test("Claude and Codex manifests describe the same plugin", async () => {
     const claude = await readJson(".claude-plugin/plugin.json");
     const codex = await readJson(".codex-plugin/plugin.json");
-    const description = "Run cross-model skill evals that benchmark each revision, iteratively autofix failures, and prove improvements across Claude Code and Codex.";
+    const description = "Run cross-model skill evals that benchmark source changes, diagnose failures, and deliver evidence-backed improvement advice across Claude Code and Codex.";
 
     expect(claude.name).toBe("skill-eval");
     expect(codex.name).toBe("skill-eval");
@@ -31,7 +31,7 @@ describe("plugin packaging", () => {
 
     expect(claude.name).toBe("skill-eval");
     expect(claudeEntry.name).toBe("skill-eval");
-    expect(claudeEntry.description).toBe("Run cross-model skill evals that benchmark each revision, iteratively autofix failures, and prove improvements across Claude Code and Codex.");
+    expect(claudeEntry.description).toBe("Run cross-model skill evals that benchmark source changes, diagnose failures, and deliver evidence-backed improvement advice across Claude Code and Codex.");
     expect(claudeEntry.source).toBe("./");
     expect(codex.name).toBe("skill-eval");
     expect(codexEntry.name).toBe("skill-eval");

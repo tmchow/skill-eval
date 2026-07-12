@@ -18,7 +18,7 @@ export interface ScriptCheckOptions {
 }
 
 export interface ScriptCheckResult {
-  schema_version: 1;
+  schema_version: 2;
   check_id: string;
   version: string;
   script: string;
@@ -94,7 +94,7 @@ export async function runScriptCheck(options: ScriptCheckOptions): Promise<Scrip
     && (options.stdoutContains === undefined || processResult.stdout.includes(options.stdoutContains))
     && (options.stderrNotContains === undefined || !processResult.stderr.includes(options.stderrNotContains));
   const result: ScriptCheckResult = {
-    schema_version: 1,
+    schema_version: 2,
     check_id: options.checkId,
     version: options.version,
     script: options.script,

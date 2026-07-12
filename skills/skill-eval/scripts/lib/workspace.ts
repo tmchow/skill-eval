@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, realpath, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { copyTree, containedPath, hashTree, hashValue, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { findPotentialEvaluatorFiles, readSkill, resolveSkillTarget } from "./skill.ts";
 import { validateSuite } from "./suite.ts";
-import { registerCampaignRun, validateCampaignRole, validateCampaignTarget } from "./campaign.ts";
+import { registerCampaignRun, validateCampaignRole, validateCampaignSuiteContinuity, validateCampaignTarget } from "./campaign.ts";
 import type { EvalSuite, PrepareRunOptions, RunState } from "./types.ts";
 
 function runGit(cwd: string, args: string[], allowFailure = false): { exitCode: number; stdout: Buffer; stderr: Buffer } {
@@ -52,14 +52,40 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
   const skill = await readSkill(targetPath);
   if (suite.skill_name !== skill.name) throw new Error(`suite skill_name ${suite.skill_name} does not match target ${skill.name}`);
   if ((options.campaignDir === undefined) !== (options.campaignRole === undefined)) throw new Error("prepare requires both campaignDir and campaignRole");
-  if (options.campaignDir) {
-    await validateCampaignTarget(options.campaignDir, targetPath, skill.name);
+  const campaign = options.campaignDir
+    ? await validateCampaignTarget(options.campaignDir, targetPath, skill.name)
+    : undefined;
+  if (campaign) {
     validateCampaignRole(options.campaignRole!);
+    if (suite.hypothesis.trim() !== campaign.measurement_goal.trim()) {
+      throw new Error("suite hypothesis must exactly match the confirmed campaign measurement goal; create a new campaign if the goal changed");
+    }
   }
   const repoResult = runGit(targetPath, ["rev-parse", "--show-toplevel"]);
   const repoRoot = await realpath(repoResult.stdout.toString().trim());
   const relativeTarget = relative(repoRoot, targetPath).replaceAll("\\", "/");
   if (!relativeTarget || relativeTarget.startsWith("..")) throw new Error("target must be inside its Git repository");
+  if (campaign) await validateCampaignSuiteContinuity(campaign, suite);
+
+  let requestedAnchorRef = options.anchorRef ?? "HEAD";
+  let anchorCommit: string | null;
+  if (campaign?.anchor) {
+    if (options.anchorRef) {
+      const explicitCommit = resolveCommit(repoRoot, options.anchorRef);
+      if (!explicitCommit) throw new Error(`anchor ref does not resolve to a commit: ${options.anchorRef}`);
+      if (campaign.anchor.commit !== explicitCommit) throw new Error("requested anchor conflicts with the campaign's fixed anchor");
+    }
+    requestedAnchorRef = campaign.anchor.ref ?? campaign.anchor.commit ?? "HEAD";
+    anchorCommit = campaign.anchor.commit;
+  } else {
+    anchorCommit = resolveCommit(repoRoot, requestedAnchorRef);
+    if (!anchorCommit && options.anchorRef) throw new Error(`anchor ref does not resolve to a commit: ${requestedAnchorRef}`);
+  }
+  const headCommit = resolveCommit(repoRoot, "HEAD");
+  const targetTracked = headCommit ? treeContainsTarget(repoRoot, headCommit, relativeTarget) : false;
+  const anchorExists = anchorCommit ? treeContainsTarget(repoRoot, anchorCommit, relativeTarget) : false;
+  if (campaign?.anchor && campaign.anchor.kind !== (anchorExists ? "git" : "none")) throw new Error("campaign anchor kind no longer matches its fixed commit");
+
   const potentialEvaluatorFiles = new Set(await findPotentialEvaluatorFiles(targetPath));
   const executorExclusions = [...new Set(options.executorExclusions ?? [])].map((path) => path.replaceAll("\\", "/"));
   for (const path of executorExclusions) {
@@ -78,12 +104,9 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
   const authoredPath = join(runDir, "versions", "authored");
   await copyTree(targetPath, authoredPath);
   const anchorPath = join(runDir, "versions", "anchor");
-  const requestedAnchorRef = options.anchorRef ?? "HEAD";
-  const anchorCommit = resolveCommit(repoRoot, requestedAnchorRef);
-  if (!anchorCommit && options.anchorRef) throw new Error(`anchor ref does not resolve to a commit: ${requestedAnchorRef}`);
-  const headCommit = resolveCommit(repoRoot, "HEAD");
-  const targetTracked = headCommit ? treeContainsTarget(repoRoot, headCommit, relativeTarget) : false;
-  const anchorExists = anchorCommit ? await extractTreeAtRef(repoRoot, anchorCommit, relativeTarget, anchorPath) : false;
+  if (anchorExists && !await extractTreeAtRef(repoRoot, anchorCommit!, relativeTarget, anchorPath)) {
+    throw new Error("fixed anchor target disappeared during preparation");
+  }
   const anchor = anchorExists
     ? { kind: "git" as const, ref: requestedAnchorRef, commit: anchorCommit! }
     : { kind: "none" as const, ref: requestedAnchorRef, ...(anchorCommit ? { commit: anchorCommit } : {}) };
@@ -112,7 +135,7 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
     }
   }
   const state: RunState = {
-    schema_version: 1,
+    schema_version: 2,
     run_id: runId,
     run_dir: runDir,
     created_at: createdAt,
@@ -123,7 +146,7 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
     requested_hosts: [...new Set(options.hosts)],
     host_metadata: hostMetadata,
     executor_exclusions: executorExclusions,
-    ...(options.campaignDir ? { campaign: { campaign_dir: resolve(options.campaignDir), role: options.campaignRole! } } : {}),
+    ...(options.campaignDir ? { campaign: { campaign_dir: resolve(options.campaignDir), role: options.campaignRole!, measurement_goal: campaign!.measurement_goal } } : {}),
     anchor,
     versions: {
       authored: { path: authoredPath, parent: null, created_at: createdAt },
@@ -145,8 +168,18 @@ export async function prepareRun(options: PrepareRunOptions): Promise<RunState> 
       target_tracked: targetTracked,
     },
   };
+  if (campaign?.anchor?.snapshot_hash && state.hashes.versions.anchor !== campaign.anchor.snapshot_hash) {
+    await rm(runDir, { recursive: true, force: true });
+    throw new Error("campaign anchor snapshot hash changed");
+  }
   await writeJson(join(runDir, "run.json"), state);
-  if (options.campaignDir) await registerCampaignRun(options.campaignDir, { runDir, role: options.campaignRole! });
+  if (options.campaignDir) {
+    try { await registerCampaignRun(options.campaignDir, { runDir, role: options.campaignRole! }); }
+    catch (error) {
+      await rm(runDir, { recursive: true, force: true });
+      throw error;
+    }
+  }
   return state;
 }
 
@@ -176,25 +209,6 @@ export async function verifyRunIntegrity(runDir: string): Promise<void> {
     const path = state.versions[version]?.path;
     if (!path || await hashTree(path) !== expected) throw new Error(`version hash mismatch: ${version}`);
   }
-}
-
-export async function addVersion(runDir: string, id: string, sourcePath: string, parent: string | null): Promise<RunState> {
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(id)) throw new Error("version id must be lower-case hyphen-case");
-  if (["anchor", "authored"].includes(id)) throw new Error(`reserved version id: ${id}`);
-  const state = await loadRun(runDir);
-  if (state.versions[id]) throw new Error(`version already exists: ${id}`);
-  const family = id.startsWith("challenger-") ? "challenger-" : id.startsWith("description-") ? "description-" : null;
-  if (family && Object.keys(state.versions).filter((name) => name.startsWith(family)).length >= 5) throw new Error(`${family.slice(0, -1)} version limit reached (5)`);
-  if (parent && !state.versions[parent]) throw new Error(`unknown parent version: ${parent}`);
-  const source = await realpath(resolve(sourcePath));
-  const skill = await readSkill(source);
-  if (skill.name !== state.skill_name) throw new Error(`version skill name ${skill.name} does not match ${state.skill_name}`);
-  const destination = join(state.run_dir, "versions", id);
-  await copyTree(source, destination);
-  state.versions[id] = { path: destination, parent, created_at: new Date().toISOString() };
-  state.hashes.versions[id] = await hashTree(destination);
-  await writeJson(join(state.run_dir, "run.json"), state);
-  return state;
 }
 
 export async function persistSuite(runDir: string): Promise<{ path: string }> {

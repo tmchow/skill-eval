@@ -7,7 +7,7 @@ import { generateEvalReview } from "../skills/skill-eval/scripts/lib/eval-review
 test("generates an editable suite review without changing the source suite", async () => {
   const root = await mkdtemp(join(tmpdir(), "skill-eval-suite-review-"));
   const suite = join(root, "suite.json");
-  await writeFile(suite, JSON.stringify({ schema_version: 1, skill_name: "demo", hypothesis: "better", evals: [{ id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "task", expectations: [{ id: "result", text: "result", severity: "critical" }] }], trigger_queries: [{ id: "positive", query: "evaluate it", should_trigger: true, holdout: false }] }));
+  await writeFile(suite, JSON.stringify({ schema_version: 2, claim_class: "effectiveness", environment: { fidelity: "isolated", external_state: [] }, skill_name: "demo", hypothesis: "better", evals: [{ id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "task", expectations: [{ id: "result", text: "result", severity: "critical", evidence_role: "outcome" }] }], trigger_queries: [{ id: "positive", query: "evaluate it", should_trigger: true, validation: false }] }));
   const generated = await generateEvalReview(suite);
   const html = await readFile(generated.path, "utf8");
   expect(html).toContain("Review frozen evaluation suite");

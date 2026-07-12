@@ -29,7 +29,7 @@ export async function recordHumanFeedback(options: RecordHumanFeedbackOptions): 
   if (previous.some((item) => item.feedback_id === feedbackId)) throw new Error(`feedback id already exists: ${feedbackId}`);
 
   const result: HumanJudgment = {
-    schema_version: 1,
+    schema_version: 2,
     feedback_id: feedbackId,
     comparison_id: judgment.comparison_id,
     execution_attempt_id: judgment.execution_attempt_id,

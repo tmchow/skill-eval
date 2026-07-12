@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createIsolatedCodexHome } from "./hosts.ts";
+import { createIsolatedCodexHome, DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, effectiveRuntimeProfile } from "./hosts.ts";
 import { copyTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { environment, redactSecrets, terminateProcessTree } from "./process.ts";
 import { createOperation } from "./operations.ts";
@@ -16,6 +16,7 @@ export interface TriggerProbeRequest {
   workDir: string;
   timeoutMs: number;
   model?: string;
+  reasoningEffort?: string;
 }
 
 export type TriggerProbe = (host: HostName, request: TriggerProbeRequest) => Promise<Omit<TriggerResult, "schema_version" | "attempt_id" | "partition" | "created_at" | "host" | "version" | "query_id" | "should_trigger" | "repetition">>;
@@ -32,6 +33,7 @@ export interface TriggerSuiteOptions {
   queryIds?: string[];
   concurrency?: number;
   models?: Partial<Record<HostName, string>>;
+  reasoningEfforts?: Partial<Record<HostName, string>>;
   operation?: OperationTracker;
   limits?: OperationLimits;
   resume?: boolean;
@@ -67,24 +69,23 @@ export function eventShowsTrigger(host: HostName, event: unknown, skillName: str
   if (!event || typeof event !== "object") return false;
   const value = event as Record<string, any>;
   if (host === "claude") {
+    const expected = `skill-eval-probe:${skillName}`;
     const content = value.message?.content;
     if (Array.isArray(content)) {
       for (const item of content) {
         if (item?.type === "tool_use" && item?.name === "Skill") {
-          const invoked = String(item?.input?.skill ?? "").split(":").at(-1);
-          if (invoked === skillName) return true;
+          if (String(item?.input?.skill ?? "") === expected) return true;
         }
       }
     }
     const block = value.event?.content_block;
     if (block?.type === "tool_use" && block?.name === "Skill") {
-      const invoked = String(block?.input?.skill ?? "").split(":").at(-1);
-      if (invoked === skillName) return true;
+      if (String(block?.input?.skill ?? "") === expected) return true;
     }
   }
   const normalized = JSON.stringify(value).replaceAll("\\", "/");
   const normalizedPath = skillPath.replaceAll("\\", "/");
-  return normalized.includes(`/skills/${skillName}/SKILL.md`) || normalized.includes(`${normalizedPath}/SKILL.md`);
+  return normalized.includes(`${normalizedPath}/SKILL.md`);
 }
 
 interface TriggerProcessRequest {
@@ -99,6 +100,14 @@ interface TriggerProcessRequest {
   host: HostName;
   skillName: string;
   skillPath: string;
+}
+
+export function buildClaudeTriggerArgs(pluginRoot: string, model?: string, reasoningEffort?: string): string[] {
+  return ["--plugin-dir", pluginRoot, "--setting-sources", "", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", "Skill,Read", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--model", model ?? DEFAULT_CLAUDE_MODEL, "--effort", reasoningEffort ?? DEFAULT_CLAUDE_REASONING_EFFORT, "-p"];
+}
+
+export function buildCodexTriggerArgs(workDir: string, model?: string, reasoningEffort?: string): string[] {
+  return ["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", "--model", model ?? DEFAULT_CODEX_MODEL, "-c", `model_reasoning_effort="${reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT}"`, "-C", workDir, "-"];
 }
 
 async function runUntilTrigger(request: TriggerProcessRequest): Promise<{ exitCode: number; triggered: boolean; timedOut: boolean; stderr: string }> {
@@ -175,7 +184,7 @@ async function defaultTriggerProbe(host: HostName, request: TriggerProbeRequest)
     await copyTree(request.skillPath, join(pluginRoot, "skills", request.skillName));
     result = await runUntilTrigger({
       command: "claude",
-      args: ["--plugin-dir", pluginRoot, "--setting-sources", "", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", "Skill,Read", "--output-format", "stream-json", "--verbose", "--no-session-persistence", ...(request.model ? ["--model", request.model] : []), "-p"],
+      args: buildClaudeTriggerArgs(pluginRoot, request.model, request.reasoningEffort),
       cwd: request.workDir,
       input: request.query,
       timeoutMs: request.timeoutMs,
@@ -192,7 +201,7 @@ async function defaultTriggerProbe(host: HostName, request: TriggerProbeRequest)
       await copyTree(request.skillPath, join(isolatedHome.path, "skills", request.skillName));
       result = await runUntilTrigger({
         command: "codex",
-        args: ["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", ...(request.model ? ["--model", request.model] : []), "-C", request.workDir, "-"],
+        args: buildCodexTriggerArgs(request.workDir, request.model, request.reasoningEffort),
         cwd: request.workDir,
         input: request.query,
         timeoutMs: request.timeoutMs,
@@ -226,12 +235,12 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   const id = createAttemptId(options.attemptId);
   let previous: TriggerResult[] = [];
   try { previous = await readJson<TriggerResult[]>(join(runDir, "triggers.json")); } catch { /* first trigger run */ }
-  const probe = options.probe ?? defaultTriggerProbe;
+  const probe: TriggerProbe = options.probe ?? defaultTriggerProbe;
   const partition = options.partition ?? "training";
   const queries = (suite.trigger_queries ?? []).filter((query) => {
     if (options.queryIds && !options.queryIds.includes(query.id)) return false;
     if (partition === "all") return true;
-    return partition === (query.holdout ? "holdout" : "training");
+    return partition === (query.validation ? "validation" : "training");
   });
   if (queries.length === 0) throw new Error(`no ${partition} trigger queries selected`);
   const tasks: Array<{ query: typeof queries[number]; host: HostName; repetition: number }> = [];
@@ -245,7 +254,7 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   const attemptRoot = join(runDir, "artifacts", "triggers", id);
   const manifestPath = join(attemptRoot, "attempt.json");
   const manifest = {
-    schema_version: 1, attempt_id: id, kind: "trigger", status: "started", created_at: new Date().toISOString(),
+    schema_version: 2, attempt_id: id, kind: "trigger", status: "started", created_at: new Date().toISOString(),
     partition, version: options.version, hosts: [...options.hosts], query_ids: queries.map((item) => item.id),
     repetitions: options.repetitions ?? 3, planned_records: tasks.length,
   };
@@ -280,9 +289,22 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
     await mapLimit(remaining, options.concurrency ?? 6, async ({ query, host, repetition }): Promise<TriggerResult> => {
       const remaining = await operation.beginModelCall();
       const workDir = join(runDir, "artifacts", "triggers", id, options.version, host, query.id, `run-${repetition}`);
-      const outcome = await probe(host, { query: query.query, skillName: state.skill_name, skillPath: version.path, workDir, timeoutMs: Math.min(options.timeoutMs ?? 60_000, remaining), model: options.models?.[host] });
+      const outcome = await probe(host, { query: query.query, skillName: state.skill_name, skillPath: version.path, workDir, timeoutMs: Math.min(options.timeoutMs ?? 60_000, remaining), model: options.models?.[host], reasoningEffort: options.reasoningEfforts?.[host] });
       await operation.finishModelCall();
-      const result: TriggerResult = { schema_version: 1, attempt_id: id, partition: query.holdout ? "holdout" : "training", created_at: new Date().toISOString(), host, version: options.version, query_id: query.id, should_trigger: query.should_trigger, repetition, ...outcome };
+      const runtimeProfile = outcome.runtime_profile ?? effectiveRuntimeProfile(host, {
+        cwd: workDir,
+        prompt: query.query,
+        eventPath: outcome.event_path,
+        stderrPath: join(workDir, "stderr.txt"),
+        finalPath: join(workDir, "final.md"),
+        timeoutMs: options.timeoutMs ?? 60_000,
+        model: options.models?.[host],
+        reasoningEffort: options.reasoningEfforts?.[host],
+        role: "trigger",
+        capabilities: ["skill-discovery-read"],
+        contextMode: "isolated",
+      });
+      const result: TriggerResult = { schema_version: 2, attempt_id: id, partition: query.validation ? "validation" : "training", created_at: new Date().toISOString(), host, version: options.version, query_id: query.id, should_trigger: query.should_trigger, repetition, ...outcome, runtime_profile: runtimeProfile };
       await persistResult(result);
       return result;
     });

@@ -6,6 +6,45 @@ export async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
+export async function readOptionalJson<T>(path: string, fallback: T): Promise<T> {
+  try { return await readJson<T>(path); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return fallback;
+    throw error;
+  }
+}
+
+export function parseJsonObject(raw: string): Record<string, any> | null {
+  const candidates = [raw.trim()];
+  for (let start = 0; start < raw.length; start += 1) {
+    if (raw[start] !== "{") continue;
+    let depth = 0; let quoted = false; let escaped = false;
+    for (let index = start; index < raw.length; index += 1) {
+      const character = raw[index]!;
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') quoted = false;
+        continue;
+      }
+      if (character === '"') quoted = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}" && --depth === 0) {
+        candidates.push(raw.slice(start, index + 1));
+        start = index;
+        break;
+      }
+    }
+  }
+  for (const candidate of [...new Set(candidates)]) {
+    try {
+      const value = JSON.parse(candidate);
+      if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    } catch { /* try the next complete JSON object */ }
+  }
+  return null;
+}
+
 export async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);

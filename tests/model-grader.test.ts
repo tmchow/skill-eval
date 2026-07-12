@@ -34,9 +34,9 @@ async function fixture(): Promise<{ runDir: string; adapter: GraderAdapter }> {
   const executionRunDir = join(runDir, "artifacts", "runs", "attempt", "codex", "case", "authored", "run-1");
   const outputDir = join(runDir, "output"); await mkdir(outputDir); await writeFile(join(outputDir, "result.txt"), "done");
   const events = join(runDir, "events.jsonl"); await writeFile(events, `{"tool":"required","skill_path":"${join(executionRunDir, "skill")}"}\n`);
-  await writeJson(join(runDir, "run.json"), { schema_version: 1, run_id: "r", run_dir: runDir, created_at: new Date().toISOString(), target_path: runDir, repo_root: runDir, skill_name: "demo", invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "none" }, versions: {}, hashes: { versions: {}, fixtures: {}, suite: "s" }, git: { initial_clean: false, initial_status: "", branch: null, head: null, target_tracked: false } });
-  await writeJson(join(runDir, "suite.json"), { schema_version: 1, skill_name: "demo", hypothesis: "better", evals: [{ id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "do it", expectations: [{ id: "used-tool", text: "uses the required tool", severity: "critical" }] }] });
-  await writeJson(join(runDir, "executions.json"), [{ schema_version: 1, attempt_id: "attempt", partition: "training", created_at: new Date().toISOString(), host: "codex", eval_id: "case", version: "authored", repetition: 1, run_dir: executionRunDir, output_dir: outputDir, skill_path: join(executionRunDir, "skill"), skill_hash_before: null, skill_hash_after: null, source_mutated: false, host_result: { host: "codex", exit_code: 0, timed_out: false, malformed_events: 0, final_text: "done", duration_ms: 1, usage: { input_tokens: null, output_tokens: null, total_tokens: null, cost_usd: null }, event_path: events, stderr_path: "", final_path: "" } }]);
+  await writeJson(join(runDir, "run.json"), { schema_version: 2, run_id: "r", run_dir: runDir, created_at: new Date().toISOString(), target_path: runDir, repo_root: runDir, skill_name: "demo", invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "none" }, versions: {}, hashes: { versions: {}, fixtures: {}, suite: "s" }, git: { initial_clean: false, initial_status: "", branch: null, head: null, target_tracked: false } });
+  await writeJson(join(runDir, "suite.json"), { schema_version: 2, claim_class: "effectiveness", environment: { fidelity: "isolated", external_state: [] }, skill_name: "demo", hypothesis: "better", evals: [{ id: "case", name: "Case", purpose: "improvement", severity: "critical", prompt: "do it", expectations: [{ id: "used-tool", text: "uses the required tool", severity: "critical", evidence_role: "outcome" }] }] });
+  await writeJson(join(runDir, "executions.json"), [{ schema_version: 2, attempt_id: "attempt", partition: "training", created_at: new Date().toISOString(), host: "codex", eval_id: "case", version: "authored", repetition: 1, run_dir: executionRunDir, output_dir: outputDir, skill_path: join(executionRunDir, "skill"), skill_hash_before: null, skill_hash_after: null, source_mutated: false, host_result: { host: "codex", exit_code: 0, timed_out: false, malformed_events: 0, final_text: "done", duration_ms: 1, usage: { input_tokens: null, output_tokens: null, total_tokens: null, cost_usd: null }, event_path: events, stderr_path: "", final_path: "" } }]);
   const adapter = new GraderAdapter();
   return { runDir, adapter };
 }
@@ -84,4 +84,59 @@ test("keeps grader artifacts distinct across evaluated versions", async () => {
   expect(new Set(results.map((item) => item.run_dir)).size).toBe(2);
   expect(results.map((item) => item.run_dir).sort().join("\n")).toContain("/anchor/");
   expect(results.map((item) => item.run_dir).sort().join("\n")).toContain("/authored/");
+});
+
+test("grades a candidate-scoped mechanism expectation only on non-anchor versions", async () => {
+  const { runDir, adapter } = await fixture();
+  const [authored] = await readJson<any[]>(join(runDir, "executions.json"));
+  await writeJson(join(runDir, "executions.json"), [authored, { ...authored, version: "anchor", run_dir: `${authored.run_dir}-anchor` }]);
+  const suite = await readJson<any>(join(runDir, "suite.json"));
+  suite.evals[0].expectations[0].evidence_role = "mechanism";
+  suite.evals[0].expectations[0].version_scope = "candidate";
+  suite.evals[0].expectations.push({ id: "relative", text: "the candidate is better than baseline", severity: "quality", evidence_role: "outcome", scope: "comparison", comparison_goal: "improve" });
+  await writeJson(join(runDir, "suite.json"), suite);
+
+  const results = await runModelGraders({ runDir, executionAttemptIds: ["attempt"], gradingId: "candidate-scope", graderHosts: ["codex"], adapters: { codex: adapter } });
+
+  expect(results).toHaveLength(1);
+  expect(results[0]?.version).toBe("authored");
+  expect(adapter.prompts).toHaveLength(1);
+});
+
+test("does not expose comparison-only expectations to a single-output grader", async () => {
+  const { runDir, adapter } = await fixture();
+  const suite = await readJson<any>(join(runDir, "suite.json"));
+  suite.evals[0].expectations.push({ id: "relative", text: "coverage is no worse than baseline", severity: "quality", evidence_role: "outcome", scope: "comparison", comparison_goal: "not-worse" });
+  await writeJson(join(runDir, "suite.json"), suite);
+
+  const results = await runModelGraders({ runDir, executionAttemptIds: ["attempt"], gradingId: "scoped", graderHosts: ["codex"], adapters: { codex: adapter } });
+
+  expect(results[0]?.valid).toBe(true);
+  expect(adapter.prompts[0]).not.toContain("coverage is no worse than baseline");
+});
+
+test("skips timed-out executions instead of grading incomplete output", async () => {
+  const { runDir, adapter } = await fixture();
+  const [valid] = await readJson<any[]>(join(runDir, "executions.json"));
+  await writeJson(join(runDir, "executions.json"), [valid, {
+    ...valid, version: "anchor", run_dir: `${valid.run_dir}-timeout`,
+    host_result: { ...valid.host_result, exit_code: 137, timed_out: true, final_text: "partial" },
+  }]);
+
+  const results = await runModelGraders({ runDir, executionAttemptIds: ["attempt"], gradingId: "skip-timeout", graderHosts: ["codex"], adapters: { codex: adapter } });
+  const manifest = await readJson<any>(join(runDir, "artifacts", "model-graders", "skip-timeout", "grading-attempt.json"));
+
+  expect(results).toHaveLength(1);
+  expect(adapter.prompts).toHaveLength(1);
+  expect(manifest.skipped_executions).toMatchObject([{ version: "anchor", reason: "executor timed out" }]);
+});
+
+test("rejects direct grading when every qualitative expectation is comparison-only", async () => {
+  const { runDir, adapter } = await fixture();
+  const suite = await readJson<any>(join(runDir, "suite.json"));
+  suite.evals[0].expectations = [{ id: "relative", text: "coverage is no worse than baseline", severity: "quality", evidence_role: "outcome", scope: "comparison", comparison_goal: "not-worse" }];
+  await writeJson(join(runDir, "suite.json"), suite);
+
+  await expect(runModelGraders({ runDir, executionAttemptIds: ["attempt"], gradingId: "comparison-only", graderHosts: ["codex"], adapters: { codex: adapter } })).rejects.toThrow("execution-scoped qualitative expectation");
+  expect(adapter.prompts).toHaveLength(0);
 });

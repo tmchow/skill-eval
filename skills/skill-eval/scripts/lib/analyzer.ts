@@ -6,13 +6,9 @@ export function analyzeBenchmark(benchmark: BenchmarkArtifact): string[] {
     const left = data.versions[benchmark.comparison.left]!;
     const right = data.versions[benchmark.comparison.right]!;
     const delta = data.delta;
-    const costDelta = delta.cost_usd ?? 0;
-    const tokenDelta = delta.total_tokens ?? 0;
     const durationDelta = delta.duration_ms ?? 0;
     if (delta.pass_rate === 0) notes.push(`${partition}: aggregate pass rate is non-discriminating between versions.`);
-    if ((right.pass_rate.stddev ?? 0) >= 0.2 || (left.pass_rate.stddev ?? 0) >= 0.2) notes.push(`${partition}: pass rate is highly variable; inspect repeated cases before promotion.`);
-    if (costDelta > 0.01) notes.push(`${partition}: candidate cost increased by ${costDelta.toFixed(4)} USD per run on average.`);
-    if (tokenDelta > 0) notes.push(`${partition}: candidate token use increased by ${Math.round(tokenDelta)} on average.`);
+    if ((right.pass_rate.stddev ?? 0) >= 0.2 || (left.pass_rate.stddev ?? 0) >= 0.2) notes.push(`${partition}: pass rate is highly variable; inspect repeated cases before confirmation.`);
     if (durationDelta > 0) notes.push(`${partition}: candidate duration increased by ${Math.round(durationDelta)} ms on average.`);
   }
   return notes;

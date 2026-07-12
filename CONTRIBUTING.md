@@ -64,9 +64,9 @@ Changes must preserve these contracts:
 
 - **Adaptive reasoning belongs to the agent.** The engine collects and verifies facts; it does not generate the final evaluation verdict.
 - **Repository source is authoritative.** Installed same-name skills must not contaminate evaluation of a development checkout.
-- **Evidence is immutable and partitioned.** Attempts, identities, hashes, and held-out boundaries must fail closed when incomplete or inconsistent.
+- **Evidence is immutable and partitioned.** Attempts, identities, hashes, and training/validation boundaries must fail closed when incomplete or inconsistent.
 - **Claims require matching evidence.** Deterministic mechanisms, qualitative outcomes, triggering, and cross-host portability are different claims.
-- **Promotion is conservative.** Only a sealed, revalidated winner may be applied, and Skill Eval never pushes.
+- **Evaluation is mutation-free.** Skill Eval diagnoses and advises; callers own every target-skill edit, commit, and push.
 - **Persisted evidence is sanitized.** Credentials and secret-bearing environment values must be redacted before storage.
 
 ## Validation by Change Type
@@ -76,7 +76,7 @@ Changes must preserve these contracts:
 | Documentation or metadata | Review rendered structure, run `git diff --check`, and run contract tests affected by the change |
 | Deterministic engine behavior | Focused regression test plus `bun run validate` |
 | Skill prose or evaluation behavior | Baseline/current scenarios, regression coverage, and the measured result; use both model hosts when the portability claim requires them |
-| Host process, timeout, resume, or promotion logic | Success, interruption, and failure-path tests plus `bun run validate` |
+| Host process, timeout, resume, or confirmation logic | Success, interruption, and failure-path tests plus `bun run validate` |
 | Review UI | Server tests and visual verification of representative long and short artifacts |
 
 Run live Claude Code/Codex coverage when a change materially affects real host invocation or discovery and you have the required authentication. If you cannot run it, state that limitation rather than implying coverage.

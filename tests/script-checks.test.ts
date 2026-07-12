@@ -18,7 +18,7 @@ test("runs a frozen skill script without model calls and records immutable evide
   await chmod(join(authored, "scripts", "probe.sh"), 0o755);
   const now = new Date().toISOString();
   const state: RunState = {
-    schema_version: 1,
+    schema_version: 2,
     run_id: "run",
     run_dir: runDir,
     created_at: now,

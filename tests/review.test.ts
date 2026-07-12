@@ -14,8 +14,8 @@ test("generates a read-only anonymous review and returns safe case descriptors",
     await writeFile(join(path, "image.png"), Buffer.from([137, 80, 78, 71]));
   }
   await writeJson(join(runDir, "judgments.json"), [
-    { schema_version: 1, comparison_id: "cmp", execution_attempt_id: "attempt", repetition: 1, eval_id: "case", executor_host: "codex", judge_host: "claude", left_version: "left", right_version: "right", labels: { A: "left", B: "right" }, winner_label: "A", preferred_version: "left", reasoning: "A is clearer", valid: true, run_dir: judgeDir },
-    { schema_version: 1, comparison_id: "cmp", execution_attempt_id: "attempt", repetition: 1, eval_id: "case", executor_host: "codex", judge_host: "codex", left_version: "left", right_version: "right", labels: { A: "right", B: "left" }, winner_label: "A", preferred_version: "right", reasoning: "A is more complete", valid: true, run_dir: judgeDir },
+    { schema_version: 2, comparison_id: "cmp", execution_attempt_id: "attempt", repetition: 1, eval_id: "case", executor_host: "codex", judge_host: "claude", left_version: "left", right_version: "right", labels: { A: "left", B: "right" }, winner_label: "A", preferred_version: "left", reasoning: "A is clearer", valid: true, run_dir: judgeDir },
+    { schema_version: 2, comparison_id: "cmp", execution_attempt_id: "attempt", repetition: 1, eval_id: "case", executor_host: "codex", judge_host: "codex", left_version: "left", right_version: "right", labels: { A: "right", B: "left" }, winner_label: "A", preferred_version: "right", reasoning: "A is more complete", valid: true, run_dir: judgeDir },
   ]);
   await writeJson(join(runDir, "benchmark.json"), { verdict: "blocked or limited signal", notes: ["judges disagree"] });
 

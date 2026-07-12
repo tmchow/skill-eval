@@ -27,7 +27,7 @@ class CountingAdapter implements HostAdapter {
 test("status reports active non-behavior operations and measured usage", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "skill-eval-operation-"));
   const operation = await createOperation(runDir, {
-    kind: "description-optimization",
+    kind: "suite-critique",
     phase: "training triggers",
     planned_units: 4,
     limits: { max_model_calls: 3, max_elapsed_ms: 60_000 },
@@ -40,7 +40,7 @@ test("status reports active non-behavior operations and measured usage", async (
   const status = await readRunStatus(runDir);
   expect(status.status).toBe("running");
   expect(status.operations).toMatchObject([{
-    kind: "description-optimization",
+    kind: "suite-critique",
     status: "active",
     phase: "training triggers",
     completed_units: 1,
@@ -66,7 +66,7 @@ test("instrumented adapters enforce an exact model-call ceiling", async () => {
 
 test("wait returns when a long-running operation completes", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "skill-eval-operation-wait-"));
-  const operation = await createOperation(runDir, { kind: "description-optimization", phase: "evaluating" });
+  const operation = await createOperation(runDir, { kind: "suite-critique", phase: "evaluating" });
   setTimeout(() => { void operation.complete("converged"); }, 20);
 
   const status = await waitForRun(runDir, { pollMs: 5, timeoutMs: 1_000 });
@@ -74,9 +74,21 @@ test("wait returns when a long-running operation completes", async () => {
   expect(status.operations[0]?.stop_reason).toBe("converged");
 });
 
+test("completed operation elapsed time stops advancing", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "skill-eval-operation-elapsed-"));
+  const operation = await createOperation(runDir, { kind: "suite-critique", phase: "reviewing" });
+  await Bun.sleep(5);
+  await operation.complete("approved");
+
+  const first = await readRunStatus(runDir);
+  await Bun.sleep(10);
+  const second = await readRunStatus(runDir);
+  expect(second.operations[0]?.elapsed_ms).toBe(first.operations[0]?.elapsed_ms);
+});
+
 test("instrumented adapters open a circuit after three host timeouts", async () => {
   const runDir = await mkdtemp(join(tmpdir(), "skill-eval-operation-circuit-"));
-  const operation = await createOperation(runDir, { kind: "behavior-optimization", phase: "evaluating" });
+  const operation = await createOperation(runDir, { kind: "trigger", phase: "evaluating" });
   const adapter = new CountingAdapter();
   adapter.execute = async (request) => {
     adapter.calls += 1;
@@ -92,4 +104,35 @@ test("instrumented adapters open a circuit after three host timeouts", async () 
   for (let attempt = 0; attempt < 3; attempt += 1) await wrapped.codex!.execute(request);
   await expect(wrapped.codex!.execute(request)).rejects.toThrow("host failure circuit open");
   expect(adapter.calls).toBe(3);
+});
+
+test("status reports active behavior cells before their first result", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "skill-eval-active-cell-"));
+  const attemptDir = join(runDir, "artifacts", "runs", "attempt");
+  const taskDir = join(attemptDir, "codex", "case", "authored", "run-1");
+  await mkdir(taskDir, { recursive: true });
+  await writeFile(join(runDir, "executions.json"), "[]");
+  await writeFile(join(attemptDir, "attempt.json"), JSON.stringify({ schema_version: 2, attempt_id: "attempt", kind: "behavior", status: "started", created_at: new Date().toISOString(), partition: "training", versions: ["authored"], hosts: ["codex"], eval_ids: ["case"], repetitions: 1, planned_records: 1, record_count: 0 }));
+  await writeFile(join(taskDir, "execution-state.json"), JSON.stringify({ schema_version: 2, status: "started", started_at: new Date(Date.now() - 25).toISOString(), host: "codex", version: "authored", eval_id: "case", repetition: 1 }));
+  await mkdir(join(taskDir, "workspace"));
+  await writeFile(join(taskDir, "workspace", "execution-state.json"), JSON.stringify({ schema_version: 2, status: "started", started_at: new Date().toISOString(), host: "fake", version: "fake", eval_id: "fake", repetition: 99 }));
+
+  const status = await readRunStatus(runDir);
+  expect(status.attempts[0]?.active_records).toMatchObject([{ host: "codex", version: "authored", eval_id: "case", repetition: 1 }]);
+  expect(status.attempts[0]?.active_records).toHaveLength(1);
+  expect(status.attempts[0]!.active_records[0]!.elapsed_ms).toBeGreaterThanOrEqual(0);
+});
+
+test("status suppresses stale started cells after completion or interruption", async () => {
+  for (const manifestStatus of ["complete", "interrupted"] as const) {
+    const runDir = await mkdtemp(join(tmpdir(), "skill-eval-stale-cell-"));
+    const attemptDir = join(runDir, "artifacts", "runs", "attempt");
+    const taskDir = join(attemptDir, "codex", "case", "authored", "run-1");
+    await mkdir(taskDir, { recursive: true });
+    await writeFile(join(runDir, "executions.json"), "[]");
+    await writeFile(join(attemptDir, "attempt.json"), JSON.stringify({ schema_version: 2, attempt_id: "attempt", kind: "behavior", status: manifestStatus, planned_records: 1, record_count: 0 }));
+    await writeFile(join(taskDir, "execution-state.json"), JSON.stringify({ schema_version: 2, status: "started", started_at: new Date().toISOString(), host: "codex", version: "authored", eval_id: "case", repetition: 1 }));
+
+    expect((await readRunStatus(runDir)).attempts[0]?.active_records).toEqual([]);
+  }
 });

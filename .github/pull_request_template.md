@@ -52,5 +52,5 @@ Use `Not applicable` for mechanical changes.
 - [ ] I added or updated regression coverage proportional to the behavioral risk.
 - [ ] I exercised important failure paths, or explained why they are not applicable.
 - [ ] I documented validation gaps and did not present unavailable evidence as passing.
-- [ ] I confirmed that this change preserves source isolation, evidence integrity, and promotion boundaries where relevant.
+- [ ] I confirmed that this change preserves source isolation, evidence integrity, and the evaluator-only mutation boundary where relevant.
 - [ ] I understand that a sound PR may still be declined or independently reimplemented.

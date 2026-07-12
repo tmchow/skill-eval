@@ -4,13 +4,13 @@
     "name": "Trevin Chow"
   },
   "metadata": {
-    "description": "Cross-model skill evals with iterative autofixes and evidence-backed promotion",
+    "description": "Cross-model skill evals with realistic benchmarks, independent judgment, and evidence-backed improvement advice",
     "version": "0.1.0"
   },
   "plugins": [
     {
       "name": "skill-eval",
-      "description": "Run cross-model skill evals that benchmark each revision, iteratively autofix failures, and prove improvements across Claude Code and Codex.",
+      "description": "Run cross-model skill evals that benchmark source changes, diagnose failures, and deliver evidence-backed improvement advice across Claude Code and Codex.",
       "author": {
         "name": "Trevin Chow"
       },

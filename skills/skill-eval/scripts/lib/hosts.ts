@@ -1,8 +1,13 @@
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { redactSecrets, runProcess } from "./process.ts";
-import type { HostAdapter, HostName, HostRequest, HostResult } from "./types.ts";
+import type { EffectiveRuntimeProfile, HostAdapter, HostName, HostRequest, HostResult } from "./types.ts";
+
+export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
+export const DEFAULT_CODEX_REASONING_EFFORT = "high";
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8";
+export const DEFAULT_CLAUDE_REASONING_EFFORT = "high";
 
 export interface HostAdapterOptions {
   commands?: Partial<Record<HostName, string>>;
@@ -23,36 +28,53 @@ export async function createIsolatedCodexHome(sourceHome = process.env.CODEX_HOM
   return { path, cleanup: () => rm(path, { recursive: true, force: true }) };
 }
 
-export function buildClaudeArgs(request: Pick<HostRequest, "finalPath" | "model">): string[] {
+export function buildClaudeArgs(request: Pick<HostRequest, "finalPath" | "model" | "reasoningEffort" | "contextMode">): string[] {
+  const mode = request.contextMode ?? "isolated";
+  const model = request.model ?? DEFAULT_CLAUDE_MODEL;
   return [
-    "--safe-mode",
+    ...(mode === "isolated" ? ["--safe-mode"] : []),
     "--disable-slash-commands",
-    "--setting-sources", "",
+    ...(mode === "isolated" ? ["--setting-sources", ""] : mode === "project-context" ? ["--setting-sources", "project"] : []),
     "--no-session-persistence",
-    "--strict-mcp-config",
+    ...(mode === "live" ? [] : ["--strict-mcp-config"]),
     "--permission-mode", "auto",
     "--output-format", "stream-json",
     "--verbose",
-    ...(request.model ? ["--model", request.model] : []),
+    "--model", model,
+    "--effort", request.reasoningEffort ?? DEFAULT_CLAUDE_REASONING_EFFORT,
     "-p",
   ];
 }
 
-export function buildCodexArgs(request: Pick<HostRequest, "cwd" | "finalPath" | "outputSchemaPath" | "model">): string[] {
+export function buildCodexArgs(request: Pick<HostRequest, "cwd" | "finalPath" | "outputSchemaPath" | "model" | "reasoningEffort" | "contextMode">): string[] {
+  const mode = request.contextMode ?? "isolated";
+  const model = request.model ?? DEFAULT_CODEX_MODEL;
   return [
     "exec",
     "--json",
     "--ephemeral",
-    "--ignore-user-config",
-    "--ignore-rules",
+    ...(mode === "live" ? [] : ["--ignore-user-config"]),
+    ...(mode === "isolated" ? ["--ignore-rules"] : []),
     "--sandbox", "workspace-write",
     "--skip-git-repo-check",
-    ...(request.model ? ["--model", request.model] : []),
+    "--model", model,
+    "-c", `model_reasoning_effort="${request.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT}"`,
     "-C", request.cwd,
     "-o", request.finalPath,
     ...(request.outputSchemaPath ? ["--output-schema", request.outputSchemaPath] : []),
     "-",
   ];
+}
+
+export function effectiveRuntimeProfile(host: HostName, request: HostRequest): EffectiveRuntimeProfile {
+  return {
+    role: request.role ?? "behavior",
+    host,
+    model: request.model ?? (host === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL),
+    reasoning_effort: request.reasoningEffort ?? (host === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : DEFAULT_CLAUDE_REASONING_EFFORT),
+    context_mode: request.contextMode ?? "isolated",
+    capabilities: [...new Set(request.capabilities ?? [])],
+  };
 }
 
 function jsonLines(raw: string): { events: Array<Record<string, any>>; malformed: number } {
@@ -112,11 +134,34 @@ function metricsFrom(events: Array<Record<string, any>>): NonNullable<HostResult
   return { tool_calls: toolCalls, steps, errors };
 }
 
+async function preserveClaudeBackgroundResults(events: Array<Record<string, any>>, eventPath: string, env: Record<string, string | undefined>): Promise<void> {
+  const roots = [tmpdir(), "/tmp", "/private/tmp"].map((path) => resolve(path));
+  const seen = new Set<string>();
+  for (const event of events) {
+    if (event.type !== "system" || event.subtype !== "task_notification" || event.status !== "completed") continue;
+    if (typeof event.tool_use_id !== "string" || typeof event.output_file !== "string") continue;
+    const path = resolve(event.output_file);
+    const key = `${event.tool_use_id}\0${path}`;
+    if (seen.has(key) || !path.includes(`${sep}tasks${sep}`) || !roots.some((root) => path.startsWith(`${root}${sep}`))) continue;
+    seen.add(key);
+    try {
+      const info = await stat(path);
+      if (!info.isFile() || info.size > 2 * 1024 * 1024) continue;
+      const content = redactSecrets(await readFile(path, "utf8"), env);
+      await appendFile(eventPath, `${JSON.stringify({
+        type: "user",
+        message: { role: "user", content: [{ type: "tool_result", tool_use_id: event.tool_use_id, content, is_error: false }] },
+        skill_eval_source: "claude_background_task_output",
+      })}\n`);
+    } catch { /* a missing or unreadable temporary output remains unavailable evidence */ }
+  }
+}
+
 async function execute(host: HostName, command: string, request: HostRequest, sourceCodexHome?: string): Promise<HostResult> {
   await mkdir(dirname(request.finalPath), { recursive: true });
   const args = host === "claude" ? buildClaudeArgs(request) : buildCodexArgs(request);
   const executable = command.includes("/") ? command : Bun.which(command) ?? command;
-  const isolated = host === "codex" && !request.env?.CODEX_HOME ? await createIsolatedCodexHome(sourceCodexHome) : null;
+  const isolated = host === "codex" && (request.contextMode ?? "isolated") !== "live" && !request.env?.CODEX_HOME ? await createIsolatedCodexHome(sourceCodexHome) : null;
   try {
     // The inherited marker blocks nested startup; the child restores CLAUDECODE=1 for its own tools.
     const hostEnv = { ...request.env, ...(isolated ? { CODEX_HOME: isolated.path } : {}), ...(host === "claude" ? { CLAUDECODE: undefined } : {}) };
@@ -131,6 +176,7 @@ async function execute(host: HostName, command: string, request: HostRequest, so
       stderrPath: request.stderrPath,
     });
     const parsed = jsonLines(processResult.stdout);
+    if (host === "claude") await preserveClaudeBackgroundResults(parsed.events, request.eventPath, hostEnv);
     let finalText = "";
     if (host === "claude") {
       for (const event of parsed.events) {
@@ -142,7 +188,8 @@ async function execute(host: HostName, command: string, request: HostRequest, so
     }
     finalText = redactSecrets(finalText, hostEnv);
     await writeFile(request.finalPath, finalText);
-    return {
+    const runtimeProfile = effectiveRuntimeProfile(host, request);
+    const hostResult: HostResult = {
       host,
       exit_code: processResult.exitCode,
       timed_out: processResult.timedOut,
@@ -155,9 +202,13 @@ async function execute(host: HostName, command: string, request: HostRequest, so
       final_path: request.finalPath,
       command: executable,
       args,
-      model: request.model ?? null,
+      model: runtimeProfile.model,
+      reasoning_effort: runtimeProfile.reasoning_effort,
+      runtime_profile: runtimeProfile,
       metrics: metricsFrom(parsed.events),
     };
+    await writeFile(`${request.finalPath}.host-result.json`, `${JSON.stringify(hostResult, null, 2)}\n`);
+    return hostResult;
   } finally {
     await isolated?.cleanup();
   }

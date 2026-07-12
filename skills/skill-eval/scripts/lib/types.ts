@@ -2,25 +2,55 @@ export type HostName = "claude" | "codex";
 export type Severity = "critical" | "quality" | "diagnostic";
 export type Purpose = "improvement" | "regression" | "restraint" | "fallback" | "trigger";
 export type CheckStatus = "ready" | "degraded" | "blocked";
-export type EvidencePartition = "training" | "holdout";
+export type EvidencePartition = "training" | "validation";
+export type ClaimClass = "conformance" | "effectiveness" | "generalization";
+export type ExpectationScope = "execution" | "comparison";
+export type ComparisonGoal = "improve" | "not-worse";
+export type VersionScope = "all" | "anchor" | "candidate";
+export type EvidenceRole = "outcome" | "mechanism";
+export type RuntimeRole = "behavior" | "critic" | "grader" | "judge" | "trigger";
+export type RuntimeRoleGroup = "behavior" | "evaluator";
+
+export interface HostRuntimeConfig {
+  model?: string;
+  reasoning_effort?: string;
+}
+
+export type HostRuntimeProfiles = Partial<Record<HostName, HostRuntimeConfig>>;
+export type RuntimeRoleProfiles = Partial<Record<RuntimeRoleGroup, HostRuntimeProfiles>>;
+
+export interface EffectiveRuntimeProfile {
+  role: RuntimeRole;
+  host: HostName;
+  model: string;
+  reasoning_effort: string;
+  context_mode: "isolated" | "project-context" | "live";
+  capabilities: string[];
+}
 
 export type DeterministicCheck =
-  | { type: "file_exists"; path: string }
-  | { type: "file_not_exists"; path: string }
-  | { type: "file_contains"; path: string; value: string; regex?: boolean }
-  | { type: "file_not_contains"; path: string; value: string; regex?: boolean }
-  | { type: "json_pointer_equals"; path: string; pointer: string; value: unknown }
+  | { type: "file_exists"; path: string; root?: "output" | "workspace" }
+  | { type: "file_not_exists"; path: string; root?: "output" | "workspace" }
+  | { type: "file_contains"; path: string; value: string; regex?: boolean; root?: "output" | "workspace" }
+  | { type: "file_not_contains"; path: string; value: string; regex?: boolean; root?: "output" | "workspace" }
+  | { type: "json_pointer_equals"; path: string; pointer: string; value: unknown; root?: "output" | "workspace" }
   | { type: "final_contains"; value: string; regex?: boolean }
   | { type: "final_not_contains"; value: string; regex?: boolean }
   | { type: "tool_called"; value: string; regex?: boolean }
   | { type: "tool_not_called"; value: string; regex?: boolean }
   | { type: "tool_call_count"; value: string; count: number; regex?: boolean }
+  | { type: "tool_result_contains"; tool: string; value: string; regex?: boolean }
   | { type: "exit_success" };
 
 export interface Expectation {
   id: string;
   text: string;
   severity: Severity;
+  evidence_role: EvidenceRole;
+  scope?: ExpectationScope;
+  comparison_goal?: ComparisonGoal;
+  version_scope?: VersionScope;
+  prerequisite?: boolean;
   check?: DeterministicCheck;
 }
 
@@ -31,7 +61,7 @@ export interface EvalCase {
   severity: Severity;
   prompt: string;
   fixture?: string;
-  holdout?: boolean;
+  validation?: boolean;
   expectations: Expectation[];
 }
 
@@ -39,15 +69,66 @@ export interface TriggerQuery {
   id: string;
   query: string;
   should_trigger: boolean;
-  holdout?: boolean;
+  validation?: boolean;
 }
 
 export interface EvalSuite {
-  schema_version: 1;
+  schema_version: 2;
+  claim_class: ClaimClass;
   skill_name: string;
   hypothesis: string;
+  environment?: {
+    fidelity: "isolated" | "project-context" | "live";
+    external_state: string[];
+    capabilities?: Array<"git-write">;
+    comparison_projection?: {
+      text_redactions: Array<{ pattern: string; replacement: string }>;
+      omit_tool_events?: boolean;
+    };
+    comparison_projection_required?: boolean;
+  };
   evals: EvalCase[];
   trigger_queries?: TriggerQuery[];
+}
+
+export interface SuiteCritique {
+  schema_version: 2;
+  critic_host: HostName;
+  verdict: "PASS" | "REVISE";
+  reasoning: string;
+  issues: Array<{ severity: Severity; issue: string; fix: string }>;
+  valid: boolean;
+  created_at: string;
+  runtime_profile?: EffectiveRuntimeProfile;
+}
+
+export type CritiqueDisposition = "accepted" | "rejected" | "limitation" | "blocked";
+
+export interface SuiteCritiqueAdjudicationInput {
+  schema_version: 2;
+  summary: string;
+  decisions: Array<{
+    critic_host: HostName;
+    issue_index: number;
+    disposition: CritiqueDisposition;
+    rationale: string;
+  }>;
+}
+
+export interface SuiteCritiqueAdjudication extends SuiteCritiqueAdjudicationInput {
+  critique_hash: string;
+  approved: boolean;
+  created_at: string;
+}
+
+export interface InvalidatedCheck {
+  schema_version: 2;
+  attempt_id: string;
+  eval_id: string;
+  expectation_id: string;
+  reason: string;
+  created_at: string;
+  content_hash: string;
 }
 
 export interface ProbeResult {
@@ -87,7 +168,7 @@ export interface PreflightReport {
 }
 
 export interface RunState {
-  schema_version: 1;
+  schema_version: 2;
   run_id: string;
   run_dir: string;
   created_at: string;
@@ -98,7 +179,7 @@ export interface RunState {
   requested_hosts: HostName[];
   host_metadata?: Partial<Record<HostName, { version: string | null }>>;
   executor_exclusions?: string[];
-  campaign?: { campaign_dir: string; role: string };
+  campaign?: { campaign_dir: string; role: string; measurement_goal?: string };
   anchor:
     | { kind: "git"; ref: string; commit?: string }
     | { kind: "none"; ref?: string; commit?: string };
@@ -141,6 +222,10 @@ export interface HostRequest {
   env?: Record<string, string | undefined>;
   outputSchemaPath?: string;
   model?: string;
+  reasoningEffort?: string;
+  role?: RuntimeRole;
+  capabilities?: string[];
+  contextMode?: "isolated" | "project-context" | "live";
 }
 
 export interface HostResult {
@@ -162,6 +247,8 @@ export interface HostResult {
   command?: string;
   args?: string[];
   model?: string | null;
+  reasoning_effort?: string | null;
+  runtime_profile?: EffectiveRuntimeProfile;
   metrics?: { tool_calls: number; steps: number; errors: number };
 }
 
@@ -171,7 +258,7 @@ export interface HostAdapter {
 }
 
 export interface ExecutionRecord {
-  schema_version: 1;
+  schema_version: 2;
   attempt_id: string;
   partition: EvidencePartition;
   created_at: string;
@@ -185,12 +272,14 @@ export interface ExecutionRecord {
   skill_hash_before: string | null;
   skill_hash_after: string | null;
   source_mutated: boolean;
+  wrong_skill_source?: boolean;
   executor_exclusions?: string[];
+  runtime_profile?: EffectiveRuntimeProfile;
   host_result: HostResult;
 }
 
 export interface BehaviorAttemptManifest {
-  schema_version: 1;
+  schema_version: 2;
   attempt_id: string;
   kind: "behavior";
   status: "started" | "interrupted" | "complete";
@@ -210,13 +299,18 @@ export interface GradedExpectation {
   id: string;
   text: string;
   severity: Severity;
+  evidence_role: EvidenceRole;
+  scope?: ExpectationScope;
+  comparison_goal?: ComparisonGoal;
+  version_scope?: VersionScope;
+  prerequisite?: boolean;
   passed: boolean | null;
   blocked: boolean;
   evidence: string;
 }
 
 export interface GradingResult {
-  schema_version: 1;
+  schema_version: 2;
   attempt_id?: string;
   partition?: EvidencePartition;
   host: HostName;
@@ -233,6 +327,9 @@ export interface GradingResult {
     pass_rate: number | null;
     critical_failed: number;
     critical_blocked: number;
+    prerequisites_passed?: number;
+    prerequisites_failed?: number;
+    prerequisites_blocked?: number;
     run_failed?: boolean;
   };
 }
@@ -275,7 +372,7 @@ export interface BenchmarkPartition {
 }
 
 export interface BenchmarkArtifact {
-  schema_version: 1;
+  schema_version: 2;
   comparison_id: string;
   created_at: string;
   comparison: { left: string; right: string };
@@ -284,6 +381,8 @@ export interface BenchmarkArtifact {
   preferences: { left: number; right: number; tie: number; human_left?: number; human_right?: number; human_tie?: number };
   cross_model?: {
     judge_hosts: Record<string, { left: number; right: number; tie: number }>;
+    judge_votes?: { left: number; right: number; tie: number };
+    independent_pairs?: { left: number; right: number; tie: number; total: number };
     agreement_cases: number;
     disagreement_cases: number;
   };
@@ -293,22 +392,29 @@ export interface BenchmarkArtifact {
   evidence_hash: string;
 }
 
-export interface DecisionArtifact {
-  schema_version: 1;
-  decision_id: string;
+export interface EvidenceClaim {
+  schema_version: 2;
+  claim_id: string;
   created_at: string;
-  winner: string;
-  winner_hash: string;
-  anchor_benchmark_id: string;
-  incumbent_benchmark_id: string | null;
-  approved: boolean;
-  reasons: string[];
-  benchmark_hashes: Record<string, string>;
-  decision_hash: string;
+  authored_version: "authored";
+  authored_hash: string;
+  anchor: { kind: "git" | "none"; ref: string | null; commit: string | null; snapshot_hash: string | null };
+  suite_hash: string;
+  fixture_hashes: Record<string, string>;
+  benchmark_id: string;
+  benchmark_hash: string;
+  requested_hosts: HostName[];
+  completed_hosts: HostName[];
+  completed_partitions: EvidencePartition[];
+  verdict: "improvement demonstrated";
+  environment: { fidelity: "isolated" | "project-context" | "live"; external_state: string[]; validation_visibility: "caller-visible" };
+  supported: true;
+  limitations: string[];
+  claim_hash: string;
 }
 
 export interface JudgeResult {
-  schema_version: 1;
+  schema_version: 2;
   comparison_id: string;
   execution_attempt_id: string;
   repetition: number;
@@ -324,12 +430,14 @@ export interface JudgeResult {
   rubric?: Record<string, unknown>;
   strengths?: Record<string, string[]>;
   weaknesses?: Record<string, string[]>;
+  expectations?: Array<{ id: string; severity: Severity; evidence_role: EvidenceRole; goal: ComparisonGoal; status: "PASS" | "FAIL" | "BLOCKED"; evidence: string }>;
   valid: boolean;
   run_dir: string;
+  runtime_profile?: EffectiveRuntimeProfile;
 }
 
 export interface ModelGradingResult {
-  schema_version: 1;
+  schema_version: 2;
   grading_id: string;
   execution_attempt_id: string;
   partition: EvidencePartition;
@@ -338,15 +446,16 @@ export interface ModelGradingResult {
   eval_id: string;
   version: string;
   repetition: number;
-  expectations: Array<{ id: string; severity: Severity; status: "PASS" | "FAIL" | "BLOCKED"; evidence: string }>;
+  expectations: Array<{ id: string; severity: Severity; evidence_role: EvidenceRole; status: "PASS" | "FAIL" | "BLOCKED"; evidence: string }>;
   claims: Array<{ claim: string; type: "factual" | "process" | "quality"; verified: boolean; evidence: string }>;
   eval_feedback: Array<{ expectation_id?: string; issue: string }>;
   valid: boolean;
   run_dir: string;
+  runtime_profile?: EffectiveRuntimeProfile;
 }
 
 export interface HumanJudgment {
-  schema_version: 1;
+  schema_version: 2;
   feedback_id: string;
   comparison_id: string;
   execution_attempt_id: string;
@@ -360,7 +469,7 @@ export interface HumanJudgment {
 }
 
 export interface TriggerResult {
-  schema_version: 1;
+  schema_version: 2;
   attempt_id: string;
   partition: EvidencePartition;
   created_at: string;
@@ -373,4 +482,5 @@ export interface TriggerResult {
   duration_ms: number;
   event_path: string;
   error: string | null;
+  runtime_profile?: EffectiveRuntimeProfile;
 }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { analyzeBenchmark } from "../skills/skill-eval/scripts/lib/analyzer.ts";
 
-test("surfaces non-discriminating, variable, and costly evidence", () => {
+test("surfaces discriminating power, variance, and duration without unsolicited spend estimates", () => {
   const notes = analyzeBenchmark({
     partitions: {
       training: {
@@ -16,5 +16,6 @@ test("surfaces non-discriminating, variable, and costly evidence", () => {
   } as any);
   expect(notes.some((note) => note.includes("non-discriminating"))).toBe(true);
   expect(notes.some((note) => note.includes("variable"))).toBe(true);
-  expect(notes.some((note) => note.includes("cost"))).toBe(true);
+  expect(notes.some((note) => note.includes("duration"))).toBe(true);
+  expect(notes.some((note) => note.includes("USD") || note.includes("token"))).toBe(false);
 });

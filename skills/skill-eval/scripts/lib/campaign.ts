@@ -1,30 +1,60 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { hashValue, readJson, reserveArtifactDir, writeJson } from "./json.ts";
+import { hashValue, readJson, readOptionalJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { readOperations } from "./operations.ts";
+import { loadInvalidatedChecks } from "./invalidations.ts";
+import type { EvidenceIndex } from "./evidence-index.ts";
 import { readSkill, resolveSkillTarget } from "./skill.ts";
 import { summarizeCrossHostTriggers, summarizeTriggers } from "./triggers.ts";
-import type { BenchmarkArtifact, RunState, TriggerResult } from "./types.ts";
+import type { BenchmarkArtifact, EffectiveRuntimeProfile, EvalSuite, ExecutionRecord, JudgeResult, ModelGradingResult, RunState, SuiteCritique, SuiteCritiqueAdjudication, TriggerResult } from "./types.ts";
 
-export type CampaignRunRole = "calibration" | "optimization" | "certification" | "confirmation" | "other";
+export type CampaignRunRole = "calibration" | "confirmation" | "other";
+
+export interface CampaignAnchor {
+  kind: "git" | "none";
+  ref: string | null;
+  commit: string | null;
+  snapshot_hash: string | null;
+}
 
 export interface CampaignRunLink {
   run_id: string;
   run_dir: string;
   role: CampaignRunRole;
   registered_at: string;
+  suite_hash: string;
+  suite_path: string;
+  case_ids: string[];
+  trigger_ids: string[];
+  validation_visibility: "none" | "caller-visible";
 }
 
 export interface CampaignManifest {
-  schema_version: 1;
+  schema_version: 2;
   campaign_id: string;
   campaign_dir: string;
   created_at: string;
   target_path: string;
   skill_name: string;
   measurement_goal: string;
+  anchor: CampaignAnchor | null;
   runs: CampaignRunLink[];
+}
+
+export interface CampaignCaseRetirementInput {
+  prior_run_id: string;
+  case_id: string;
+  attempt_id: string;
+  expectation_id: string;
+  reason: string;
+}
+
+export interface CampaignCaseRetirement extends CampaignCaseRetirementInput {
+  schema_version: 2;
+  retirement_id: string;
+  created_at: string;
+  content_hash: string;
 }
 
 export interface CampaignCheckpointInput {
@@ -38,7 +68,7 @@ export interface CampaignCheckpointInput {
 }
 
 export interface CampaignCheckpoint extends CampaignCheckpointInput {
-  schema_version: 1;
+  schema_version: 2;
   checkpoint_id: string;
   created_at: string;
   content_hash: string;
@@ -60,7 +90,7 @@ function stringArray(value: unknown, label: string): string[] {
 }
 
 export function validateCampaignRole(value: string): CampaignRunRole {
-  if (!["calibration", "optimization", "certification", "confirmation", "other"].includes(value)) throw new Error(`invalid campaign run role: ${value}`);
+  if (!["calibration", "confirmation", "other"].includes(value)) throw new Error(`invalid campaign run role: ${value}`);
   return value as CampaignRunRole;
 }
 
@@ -73,13 +103,14 @@ export async function createCampaign(options: { targetPath: string; measurementG
   await reserveArtifactDir(campaignDir);
   await mkdir(join(campaignDir, "checkpoints"), { recursive: true });
   const manifest: CampaignManifest = {
-    schema_version: 1,
+    schema_version: 2,
     campaign_id: campaignId,
     campaign_dir: campaignDir,
     created_at: new Date().toISOString(),
     target_path: targetPath,
     skill_name: skill.name,
     measurement_goal: text(options.measurementGoal, "measurement goal"),
+    anchor: null,
     runs: [],
   };
   await writeJson(join(campaignDir, "campaign.json"), manifest);
@@ -89,7 +120,7 @@ export async function createCampaign(options: { targetPath: string; measurementG
 export async function loadCampaign(campaignDirInput: string): Promise<CampaignManifest> {
   const campaignDir = resolve(campaignDirInput);
   const manifest = await readJson<CampaignManifest>(join(campaignDir, "campaign.json"));
-  if (manifest.schema_version !== 1 || resolve(manifest.campaign_dir) !== campaignDir) throw new Error("invalid campaign manifest");
+  if (manifest.schema_version !== 2 || resolve(manifest.campaign_dir) !== campaignDir) throw new Error("invalid campaign manifest");
   return manifest;
 }
 
@@ -104,7 +135,9 @@ export async function listCampaigns(options: { targetPath: string; cwd?: string;
       const campaign = await readJson<CampaignManifest>(path);
       if (campaign.target_path === targetPath && campaign.skill_name === skill.name) campaigns.push(campaign);
     }
-  } catch { /* no campaigns yet */ }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   return campaigns.sort((a, b) => b.created_at.localeCompare(a.created_at)).map((item) => ({
     campaign_id: item.campaign_id,
     campaign_dir: item.campaign_dir,
@@ -116,24 +149,103 @@ export async function listCampaigns(options: { targetPath: string; cwd?: string;
 
 export async function validateCampaignTarget(campaignDir: string, targetPath: string, skillName: string): Promise<CampaignManifest> {
   const campaign = await loadCampaign(campaignDir);
+  await assertCampaignTarget(campaign, targetPath, skillName);
+  return campaign;
+}
+
+export async function validateCampaignSuiteContinuity(campaign: CampaignManifest, suite: EvalSuite): Promise<void> {
+  const retired = new Set((await loadCaseRetirements(campaign.campaign_dir)).map((item) => item.case_id));
+  const requiredCases = new Set(campaign.runs.flatMap((item) => item.case_ids).filter((id) => !retired.has(id)));
+  const requiredTriggers = new Set(campaign.runs.flatMap((item) => item.trigger_ids));
+  const caseIds = suite.evals.map((item) => item.id);
+  const triggerIds = (suite.trigger_queries ?? []).map((item) => item.id);
+  const missingCases = [...requiredCases].filter((id) => !caseIds.includes(id));
+  const missingTriggers = [...requiredTriggers].filter((id) => !triggerIds.includes(id));
+  if (missingCases.length > 0) throw new Error(`campaign suite dropped protected cases: ${missingCases.join(", ")}`);
+  if (missingTriggers.length > 0) throw new Error(`campaign suite dropped protected trigger queries: ${missingTriggers.join(", ")}`);
+}
+
+async function assertCampaignTarget(campaign: CampaignManifest, targetPath: string, skillName: string): Promise<void> {
   const target = await realpath(resolve(targetPath));
   if (campaign.target_path !== target || campaign.skill_name !== skillName) throw new Error("campaign target does not match prepared skill");
-  return campaign;
 }
 
 export async function registerCampaignRun(campaignDir: string, options: { runDir: string; role: string }): Promise<CampaignManifest> {
   const campaign = await loadCampaign(campaignDir);
   const state = await readJson<RunState>(join(resolve(options.runDir), "run.json"));
-  await validateCampaignTarget(campaign.campaign_dir, state.target_path, state.skill_name);
+  const suite = await readJson<EvalSuite>(join(resolve(options.runDir), "suite.json"));
+  await assertCampaignTarget(campaign, state.target_path, state.skill_name);
   const role = validateCampaignRole(options.role);
   const existing = campaign.runs.find((item) => item.run_id === state.run_id);
   if (existing) {
     if (existing.run_dir !== state.run_dir || existing.role !== role) throw new Error(`campaign run id already linked differently: ${state.run_id}`);
     return campaign;
   }
-  campaign.runs.push({ run_id: state.run_id, run_dir: state.run_dir, role, registered_at: new Date().toISOString() });
+  const anchor: CampaignAnchor = {
+    kind: state.anchor.kind,
+    ref: state.anchor.ref ?? null,
+    commit: state.anchor.commit ?? null,
+    snapshot_hash: state.hashes.versions.anchor ?? null,
+  };
+  if (campaign.anchor && hashValue(campaign.anchor) !== hashValue(anchor)) throw new Error("campaign anchor changed; start a new campaign");
+  campaign.anchor ??= anchor;
+  await validateCampaignSuiteContinuity(campaign, suite);
+  const caseIds = suite.evals.map((item) => item.id);
+  const triggerIds = (suite.trigger_queries ?? []).map((item) => item.id);
+  const suitePath = join(campaign.campaign_dir, "suites", `${state.run_id}.json`);
+  await writeJson(suitePath, suite);
+  campaign.runs.push({
+    run_id: state.run_id,
+    run_dir: state.run_dir,
+    role,
+    registered_at: new Date().toISOString(),
+    suite_hash: state.hashes.suite,
+    suite_path: suitePath,
+    case_ids: caseIds,
+    trigger_ids: triggerIds,
+    validation_visibility: suite.evals.some((item) => item.validation) || (suite.trigger_queries ?? []).some((item) => item.validation) ? "caller-visible" : "none",
+  });
   await writeJson(join(campaign.campaign_dir, "campaign.json"), campaign);
   return campaign;
+}
+
+export async function loadCaseRetirements(campaignDir: string): Promise<CampaignCaseRetirement[]> {
+  const root = join(resolve(campaignDir), "retirements");
+  const records: CampaignCaseRetirement[] = [];
+  const glob = new Bun.Glob("*.json");
+  try {
+    for await (const path of glob.scan({ cwd: root, absolute: true })) {
+      const record = await readJson<CampaignCaseRetirement>(path);
+      const { content_hash: contentHash, ...unsigned } = record;
+      if (hashValue(unsigned) !== contentHash) throw new Error(`campaign retirement hash mismatch: ${record.retirement_id}`);
+      records.push(record);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return records.sort((a, b) => a.created_at.localeCompare(b.created_at));
+}
+
+export async function retireCampaignCase(campaignDirInput: string, input: CampaignCaseRetirementInput): Promise<CampaignCaseRetirement> {
+  const campaign = await loadCampaign(campaignDirInput);
+  const priorRun = campaign.runs.find((item) => item.run_id === input.prior_run_id);
+  if (!priorRun) throw new Error(`unknown campaign run: ${input.prior_run_id}`);
+  if (!priorRun.case_ids.includes(input.case_id)) throw new Error(`case was not present in prior run: ${input.case_id}`);
+  if ((await loadCaseRetirements(campaign.campaign_dir)).some((item) => item.case_id === input.case_id)) throw new Error(`case is already retired: ${input.case_id}`);
+  const invalidations = await loadInvalidatedChecks(priorRun.run_dir);
+  const evidence = invalidations.find((item) => item.attempt_id === input.attempt_id && item.eval_id === input.case_id && item.expectation_id === input.expectation_id);
+  if (!evidence) throw new Error("case retirement requires matching invalidated-check evidence");
+  const normalized: CampaignCaseRetirementInput = {
+    prior_run_id: input.prior_run_id,
+    case_id: input.case_id,
+    attempt_id: input.attempt_id,
+    expectation_id: input.expectation_id,
+    reason: text(input.reason, "case retirement reason"),
+  };
+  const unsigned = { schema_version: 2 as const, retirement_id: `retirement-${randomUUID()}`, created_at: new Date().toISOString(), ...normalized };
+  const record: CampaignCaseRetirement = { ...unsigned, content_hash: hashValue(unsigned) };
+  await writeJson(join(campaign.campaign_dir, "retirements", `${record.retirement_id}.json`), record);
+  return record;
 }
 
 export async function recordCampaignCheckpoint(campaignDir: string, input: CampaignCheckpointInput): Promise<CampaignCheckpoint> {
@@ -150,7 +262,7 @@ export async function recordCampaignCheckpoint(campaignDir: string, input: Campa
   const knownRuns = new Set(campaign.runs.map((item) => item.run_id));
   for (const runId of normalized.evidence_run_ids) if (!knownRuns.has(runId)) throw new Error(`unknown campaign run: ${runId}`);
   const checkpointId = `checkpoint-${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`;
-  const unsigned = { schema_version: 1 as const, checkpoint_id: checkpointId, created_at: new Date().toISOString(), ...normalized };
+  const unsigned = { schema_version: 2 as const, checkpoint_id: checkpointId, created_at: new Date().toISOString(), ...normalized };
   const checkpoint: CampaignCheckpoint = { ...unsigned, content_hash: hashValue(unsigned) };
   await writeJson(join(campaign.campaign_dir, "checkpoints", `${checkpointId}.json`), checkpoint);
   return checkpoint;
@@ -169,8 +281,14 @@ async function loadCheckpoints(campaignDir: string): Promise<CampaignCheckpoint[
   return checkpoints.sort((a, b) => a.created_at.localeCompare(b.created_at));
 }
 
-async function optionalJson<T>(path: string): Promise<T | null> {
-  try { return await readJson<T>(path); } catch { return null; }
+function distinctRuntimeProfiles(values: Array<EffectiveRuntimeProfile | undefined>): EffectiveRuntimeProfile[] {
+  const profiles = new Map<string, EffectiveRuntimeProfile>();
+  for (const value of values) {
+    if (!value) continue;
+    const key = JSON.stringify(value);
+    profiles.set(key, value);
+  }
+  return [...profiles.values()];
 }
 
 function triggerAttempts(results: TriggerResult[]) {
@@ -191,11 +309,17 @@ function triggerAttempts(results: TriggerResult[]) {
 
 async function runContext(link: CampaignRunLink) {
   const state = await readJson<RunState>(join(link.run_dir, "run.json"));
-  const triggers = await optionalJson<TriggerResult[]>(join(link.run_dir, "triggers.json")) ?? [];
-  const scriptChecks = await optionalJson<Array<{ check_id: string; passed: boolean }>>(join(link.run_dir, "script-checks.json")) ?? [];
-  const benchmarks = await optionalJson<BenchmarkArtifact[]>(join(link.run_dir, "benchmarks.json")) ?? [];
-  const description = await optionalJson<any>(join(link.run_dir, "description-optimization.json"));
-  const behavior = await optionalJson<any>(join(link.run_dir, "optimization.json"));
+  const [executions, triggers, modelGradings, judgments, critique, scriptChecks, benchmarks, adjudication, evidenceIndex] = await Promise.all([
+    readOptionalJson<ExecutionRecord[]>(join(link.run_dir, "executions.json"), []),
+    readOptionalJson<TriggerResult[]>(join(link.run_dir, "triggers.json"), []),
+    readOptionalJson<ModelGradingResult[]>(join(link.run_dir, "model-gradings.json"), []),
+    readOptionalJson<JudgeResult[]>(join(link.run_dir, "judgments.json"), []),
+    readOptionalJson<{ results: SuiteCritique[] } | null>(join(link.run_dir, "artifacts", "suite-critique-latest.json"), null),
+    readOptionalJson<Array<{ check_id: string; passed: boolean }>>(join(link.run_dir, "script-checks.json"), []),
+    readOptionalJson<BenchmarkArtifact[]>(join(link.run_dir, "benchmarks.json"), []),
+    readOptionalJson<{ adjudication: SuiteCritiqueAdjudication } | null>(join(link.run_dir, "artifacts", "suite-adjudication-latest.json"), null),
+    readOptionalJson<EvidenceIndex | null>(join(link.run_dir, "artifacts", "evidence-index.json"), null),
+  ]);
   return {
     run_id: state.run_id,
     run_dir: state.run_dir,
@@ -204,6 +328,14 @@ async function runContext(link: CampaignRunLink) {
     anchor: state.anchor,
     requested_hosts: state.requested_hosts,
     versions: Object.keys(state.versions),
+    runtime_profiles: distinctRuntimeProfiles([
+      ...executions.map((item) => item.runtime_profile ?? item.host_result.runtime_profile),
+      ...triggers.map((item) => item.runtime_profile),
+      ...modelGradings.map((item) => item.runtime_profile),
+      ...judgments.map((item) => item.runtime_profile),
+      ...(critique?.results ?? []).map((item) => item.runtime_profile),
+    ]),
+    suite_critique_adjudication: adjudication?.adjudication ?? null,
     trigger_attempts: triggerAttempts(triggers),
     script_checks: {
       total: scriptChecks.length,
@@ -212,22 +344,15 @@ async function runContext(link: CampaignRunLink) {
       checks: scriptChecks.map((item) => ({ check_id: item.check_id, passed: item.passed })),
     },
     benchmarks: benchmarks.map((item) => ({ comparison_id: item.comparison_id, comparison: item.comparison, verdict: item.verdict, gates: item.gates, partitions: item.partitions, preferences: item.preferences, cross_model: item.cross_model, evidence_hash: item.evidence_hash })),
-    description_optimization: description ? {
-      status: description.status, best_version: description.best_version, best_holdout_score: description.best_holdout_score,
-      history: (description.history ?? []).map((item: any) => ({ iteration: item.iteration, version: item.version, training: item.training, holdout: item.holdout, selected: item.selected, hypothesis: item.hypothesis, takeaway: item.takeaway, cross_model: item.cross_model })),
-    } : null,
-    behavior_optimization: behavior ? {
-      status: behavior.status, incumbent: behavior.incumbent,
-      iterations: (behavior.iterations ?? []).map((item: any) => ({ iteration: item.iteration, candidate: item.candidate, accepted: item.accepted, converged: item.converged, hypothesis: item.hypothesis, takeaway: item.takeaway, cross_model: item.cross_model, decision_id: item.decision_id })),
-    } : null,
-    operations: (await readOperations(link.run_dir)).map((item) => ({ operation_id: item.operation_id, kind: item.kind, status: item.status, phase: item.phase, completed_units: item.completed_units, planned_units: item.planned_units, iteration: item.iteration, current_candidate: item.current_candidate, best_candidate: item.best_candidate, stop_reason: item.stop_reason, message: item.message, usage: { model_calls: item.usage.model_calls } })),
+    evidence_index: evidenceIndex,
+    operations: (await readOperations(link.run_dir)).map((item) => ({ operation_id: item.operation_id, kind: item.kind, status: item.status, phase: item.phase, completed_units: item.completed_units, planned_units: item.planned_units, stop_reason: item.stop_reason, message: item.message, usage: { model_calls: item.usage.model_calls } })),
   };
 }
 
 export async function buildCampaignContext(campaignDir: string) {
   const campaign = await loadCampaign(campaignDir);
   return {
-    schema_version: 1 as const,
+    schema_version: 2 as const,
     generated_at: new Date().toISOString(),
     campaign: {
       campaign_id: campaign.campaign_id,
@@ -239,5 +364,6 @@ export async function buildCampaignContext(campaignDir: string) {
     },
     runs: await Promise.all(campaign.runs.map(runContext)),
     checkpoints: await loadCheckpoints(campaign.campaign_dir),
+    case_retirements: await loadCaseRetirements(campaign.campaign_dir),
   };
 }

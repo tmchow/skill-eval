@@ -1,10 +1,14 @@
+import { createHash } from "node:crypto";
 import { readdir, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { hashValue, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { analyzeBenchmark } from "./analyzer.ts";
 import { summarizeTriggers } from "./triggers.ts";
+import { executionCanBeGraded } from "./validity.ts";
+import { loadInvalidatedChecks } from "./invalidations.ts";
+import { hasBlindJudgeCriteria, hasExecutionQualitative } from "./expectations.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
-import type { BehaviorAttemptManifest, BenchmarkArtifact, BenchmarkPartition, BenchmarkVersionSummary, EvidencePartition, ExecutionRecord, GradingResult, HumanJudgment, JudgeResult, MetricStats, ModelGradingResult, TriggerResult } from "./types.ts";
+import type { BehaviorAttemptManifest, BenchmarkArtifact, BenchmarkPartition, BenchmarkVersionSummary, EvidencePartition, ExecutionRecord, GradingResult, HostName, HumanJudgment, JudgeResult, MetricStats, ModelGradingResult, TriggerResult } from "./types.ts";
 
 async function treeBytes(path: string): Promise<number> {
   const info = await stat(path);
@@ -24,6 +28,29 @@ export function calculateStats(values: Array<number | null | undefined>): Metric
   return { count: available.length, mean, stddev: Math.sqrt(variance), min: Math.min(...available), max: Math.max(...available) };
 }
 
+function preferenceCounts(values: Array<string>, left: string, right: string): { left: number; right: number; tie: number } {
+  return {
+    left: values.filter((item) => item === left).length,
+    right: values.filter((item) => item === right).length,
+    tie: values.filter((item) => item === "TIE").length,
+  };
+}
+
+function aggregatePairPreference(values: Array<string>, left: string, right: string): string | "TIE" {
+  const directional = new Set(values.filter((item) => item === left || item === right));
+  if (directional.size !== 1) return "TIE";
+  return [...directional][0]!;
+}
+
+export function aggregateIndependentPreferences(judgments: JudgeResult[], left: string, right: string): { left: number; right: number; tie: number } {
+  const pairs = new Map<string, JudgeResult[]>();
+  for (const judgment of judgments) {
+    const key = `${judgment.execution_attempt_id}\0${judgment.eval_id}\0${judgment.executor_host}\0${judgment.repetition}`;
+    pairs.set(key, [...(pairs.get(key) ?? []), judgment]);
+  }
+  return preferenceCounts([...pairs.values()].map((selected) => aggregatePairPreference(selected.map((item) => item.preferred_version), left, right)), left, right);
+}
+
 export interface BenchmarkOptions {
   runDir: string;
   left: string;
@@ -39,6 +66,22 @@ function comparisonId(value?: string): string {
   const id = value ?? `comparison-${Date.now()}`;
   if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(id)) throw new Error("comparison id must contain only letters, digits, dot, underscore, or hyphen");
   return id;
+}
+
+interface ComparisonAttempt {
+  status: string;
+  judge_hosts: HostName[];
+  skipped_pairs?: Array<{ attempt_id: string; eval_id: string; executor_host: HostName; repetition: number; reason: string }>;
+}
+
+async function comparisonAttempt(runDir: string, id: string): Promise<ComparisonAttempt | null> {
+  const opaqueId = createHash("sha256").update(id).digest("hex").slice(0, 16);
+  try { return await readJson<ComparisonAttempt>(join(runDir, "artifacts", "judges", opaqueId, "comparison-attempt.json")); }
+  catch { return null; }
+}
+
+function judgmentPairKey(value: Pick<JudgeResult, "execution_attempt_id" | "eval_id" | "executor_host" | "repetition">): string {
+  return `${value.execution_attempt_id}/${value.eval_id}/${value.executor_host}/run-${value.repetition}`;
 }
 
 function determineVerdict(gatesPassed: boolean, gateReasons: string[], effectPasses: boolean, qualitativePasses: boolean, noRegression: boolean): BenchmarkArtifact["verdict"] {
@@ -74,7 +117,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
   const selectedJudgmentId = options.judgmentComparisonId ?? matchingJudgmentIds[0];
   const artifactDir = join(runDir, "artifacts", "benchmarks", id);
   await reserveArtifactDir(artifactDir);
-  await writeJson(join(artifactDir, "benchmark-attempt.json"), { schema_version: 1, comparison_id: id, status: "started", created_at: new Date().toISOString(), left: options.left, right: options.right, attempt_ids: options.attemptIds });
+  await writeJson(join(artifactDir, "benchmark-attempt.json"), { schema_version: 2, comparison_id: id, status: "started", created_at: new Date().toISOString(), left: options.left, right: options.right, attempt_ids: options.attemptIds });
   const allExecutions = await readJson<ExecutionRecord[]>(join(runDir, "executions.json"));
   const allGradings = await readJson<GradingResult[]>(join(runDir, "gradings.json"));
   const gateReasons: string[] = [];
@@ -110,13 +153,17 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
   const partitions: Partial<Record<EvidencePartition, BenchmarkPartition>> = {};
   let suite: Awaited<ReturnType<typeof loadSuite>> | null = null;
   try { suite = await loadSuite(runDir); } catch { /* legacy test artifact without a frozen suite */ }
+  const invalidations = await loadInvalidatedChecks(runDir);
+  for (const item of invalidations.filter((item) => attemptSet.has(item.attempt_id))) {
+    gateReasons.push(`invalidated check blocks this evidence: ${item.eval_id}/${item.expectation_id} (${item.reason})`);
+  }
   const skillBytes = new Map<string, number>();
   await Promise.all([options.left, options.right].map(async (version) => {
     const path = state.versions[version]?.path;
     skillBytes.set(version, path ? await treeBytes(path) : 0);
   }));
 
-  const requiredPartitions = options.partitions ?? ["training", "holdout"];
+  const requiredPartitions = options.partitions ?? ["training", "validation"];
   for (const partition of requiredPartitions) {
     const partitionRuns = executions.filter((item) => item.partition === partition);
     if (partitionRuns.length === 0) {
@@ -124,7 +171,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
       continue;
     }
     const expectedEvalIds = suite
-      ? suite.evals.filter((item) => partition === (item.holdout ? "holdout" : "training")).map((item) => item.id)
+      ? suite.evals.filter((item) => partition === (item.validation ? "validation" : "training")).map((item) => item.id)
       : [...new Set(partitionRuns.map((item) => item.eval_id))];
     for (const evalId of expectedEvalIds) {
       for (const host of state.requested_hosts) {
@@ -136,7 +183,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     if (suite) {
       for (const run of partitionRuns) {
         const evalCase = suite.evals.find((item) => item.id === run.eval_id);
-        if (!evalCase?.expectations.some((expectation) => !expectation.check)) continue;
+        if (!executionCanBeGraded(run) || !evalCase || !hasExecutionQualitative(evalCase, run.version)) continue;
         const qualitative = modelGradings.filter((item) => item.execution_attempt_id === run.attempt_id && item.executor_host === run.host && item.eval_id === run.eval_id && item.version === run.version && item.repetition === run.repetition);
         if (qualitative.length === 0 || qualitative.every((item) => !item.valid)) {
           gateReasons.push(`${partition} qualitative grading missing for ${run.host}/${run.eval_id}/${run.version}/run-${run.repetition}`);
@@ -148,7 +195,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     const versionSummary = (version: string): BenchmarkVersionSummary => {
       const runs = partitionRuns.filter((item) => item.version === version);
       const grades = gradings.filter((item) => item.partition === partition && item.version === version);
-      const unsuccessful = runs.filter((item) => item.host_result.exit_code !== 0 || item.host_result.timed_out || item.host_result.malformed_events > 0 || item.source_mutated).length;
+      const unsuccessful = runs.filter((item) => !executionCanBeGraded(item)).length;
       const effectiveGrades = grades.map((grade) => {
         const model = modelGradings.filter((item) => item.valid && item.execution_attempt_id === grade.attempt_id && item.partition === partition && item.executor_host === grade.host && item.eval_id === grade.eval_id && item.version === version && item.repetition === grade.repetition);
         const expectationIds = [...new Set(model.flatMap((item) => item.expectations.map((expectation) => expectation.id)))];
@@ -157,17 +204,26 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
           const outcomes = model.flatMap((item) => item.expectations.filter((expectation) => expectation.id === expectationId));
           const statuses = new Set(outcomes.map((item) => item.status));
           const severity = outcomes[0]?.severity;
-          if (statuses.size === 1 && statuses.has("PASS")) modelPassed += 1;
-          else if (statuses.size === 1 && statuses.has("FAIL")) { modelFailed += 1; if (severity === "critical") modelCriticalFailed += 1; }
-          else { modelBlocked += 1; if (severity === "critical") modelCriticalBlocked += 1; }
+          const evidenceRole = outcomes[0]?.evidence_role;
+          if (statuses.size === 1 && statuses.has("PASS")) {
+            if (evidenceRole === "outcome") modelPassed += 1;
+          } else if (statuses.size === 1 && statuses.has("FAIL")) {
+            if (evidenceRole === "outcome") modelFailed += 1;
+            if (severity === "critical") modelCriticalFailed += 1;
+          } else {
+            if (evidenceRole === "outcome") modelBlocked += 1;
+            if (severity === "critical") modelCriticalBlocked += 1;
+          }
         }
-        const passed = grade.summary.passed + modelPassed;
-        const failed = grade.summary.failed + modelFailed;
+        const deterministicOutcomes = grade.expectations.filter((item) => item.evidence_role === "outcome" && !item.prerequisite);
+        const legacySummary = !suite && grade.expectations.length === 0;
+        const passed = (legacySummary ? grade.summary.passed : deterministicOutcomes.filter((item) => item.passed === true).length) + modelPassed;
+        const failed = (legacySummary ? grade.summary.failed : deterministicOutcomes.filter((item) => item.passed === false).length) + modelFailed;
         return {
           passRate: grade.summary.run_failed ? 0 : passed + failed > 0 ? passed / (passed + failed) : null,
           criticalFailed: grade.summary.critical_failed + modelCriticalFailed,
           criticalBlocked: grade.summary.critical_blocked + modelCriticalBlocked,
-          blocked: grade.summary.blocked + modelBlocked,
+          blocked: deterministicOutcomes.filter((item) => item.blocked).length + modelBlocked,
         };
       });
       return {
@@ -217,6 +273,39 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     && item.left_version === options.left
     && item.right_version === options.right
     && attemptSet.has(item.execution_attempt_id));
+  const partitionHasBlindCriteria = suite?.evals.some((item) => requiredPartitions.includes(item.validation ? "validation" : "training") && hasBlindJudgeCriteria(item, options.left, options.right));
+  if (suite && partitionHasBlindCriteria) {
+    if (!selectedJudgmentId) {
+      gateReasons.push("blind comparison evidence is missing");
+    } else {
+      const manifest = await comparisonAttempt(runDir, selectedJudgmentId);
+      if (!manifest || manifest.status !== "complete" || !Array.isArray(manifest.judge_hosts) || manifest.judge_hosts.length === 0) {
+        gateReasons.push(`blind comparison attempt is missing or incomplete: ${selectedJudgmentId}`);
+      } else {
+        for (const evalCase of suite.evals) {
+          if (!requiredPartitions.includes(evalCase.validation ? "validation" : "training") || !hasBlindJudgeCriteria(evalCase, options.left, options.right)) continue;
+          const criticalIds = evalCase.expectations.filter((item) => item.evidence_role === "outcome" && item.scope === "comparison" && item.severity === "critical").map((item) => item.id);
+          const leftRuns = executions.filter((item) => item.eval_id === evalCase.id && item.version === options.left);
+          for (const left of leftRuns) {
+            const right = executions.find((item) => item.attempt_id === left.attempt_id && item.eval_id === left.eval_id && item.host === left.host && item.version === options.right && item.repetition === left.repetition);
+            if (!right) continue;
+            const pair = judgmentPairKey({ execution_attempt_id: left.attempt_id, eval_id: left.eval_id, executor_host: left.host, repetition: left.repetition });
+            for (const judgeHost of manifest.judge_hosts) {
+              const judgment = validJudgments.find((item) => item.comparison_id === selectedJudgmentId && judgmentPairKey(item) === pair && item.judge_host === judgeHost);
+              if (!judgment) {
+                const skipped = manifest.skipped_pairs?.find((item) => item.attempt_id === left.attempt_id && item.eval_id === left.eval_id && item.executor_host === left.host && item.repetition === left.repetition);
+                gateReasons.push(skipped ? `blind judgment skipped: ${pair}/${judgeHost} (${skipped.reason})` : `valid blind judgment missing: ${pair}/${judgeHost}`);
+                continue;
+              }
+              for (const expectationId of criticalIds) {
+                if (!(judgment.expectations ?? []).some((item) => item.id === expectationId)) gateReasons.push(`critical comparison outcome missing: ${pair}/${judgeHost}/${expectationId}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   const validHumanJudgments = humanJudgments.filter((human) => attemptSet.has(human.execution_attempt_id) && judgments.some((judgment) =>
     (!selectedJudgmentId || judgment.comparison_id === selectedJudgmentId)
     &&
@@ -227,14 +316,10 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     && judgment.repetition === human.repetition
     && judgment.left_version === options.left
     && judgment.right_version === options.right));
-  const preferences = {
-    left: validJudgments.filter((item) => item.preferred_version === options.left).length,
-    right: validJudgments.filter((item) => item.preferred_version === options.right).length,
-    tie: validJudgments.filter((item) => item.preferred_version === "TIE").length,
-    human_left: validHumanJudgments.filter((item) => item.preferred_version === options.left).length,
-    human_right: validHumanJudgments.filter((item) => item.preferred_version === options.right).length,
-    human_tie: validHumanJudgments.filter((item) => item.preferred_version === "TIE").length,
-  };
+  const independentPreferences = aggregateIndependentPreferences(validJudgments, options.left, options.right);
+  const humanPreferences = preferenceCounts(validHumanJudgments.map((item) => item.preferred_version), options.left, options.right);
+  const preferences = { ...independentPreferences, human_left: humanPreferences.left, human_right: humanPreferences.right, human_tie: humanPreferences.tie };
+  const judgeVotes = preferenceCounts(validJudgments.map((item) => item.preferred_version), options.left, options.right);
   const judgeHosts = [...new Set(validJudgments.map((item) => item.judge_host))];
   const judgeHostPreferences = Object.fromEntries(judgeHosts.map((host) => {
     const selected = validJudgments.filter((item) => item.judge_host === host);
@@ -255,7 +340,27 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     if (new Set(selected.map((item) => item.preferred_version)).size === 1) agreementCases += 1;
     else disagreementCases += 1;
   }
-  const crossModel = { judge_hosts: judgeHostPreferences, agreement_cases: agreementCases, disagreement_cases: disagreementCases };
+  const criticalComparisons = new Map<string, Array<"PASS" | "FAIL" | "BLOCKED">>();
+  for (const judgment of validJudgments) {
+    for (const expectation of judgment.expectations ?? []) {
+      if (expectation.severity !== "critical" || expectation.evidence_role !== "outcome") continue;
+      const key = `${judgment.execution_attempt_id}/${judgment.eval_id}/${judgment.executor_host}/run-${judgment.repetition}/${expectation.id}`;
+      criticalComparisons.set(key, [...(criticalComparisons.get(key) ?? []), expectation.status]);
+    }
+  }
+  for (const [key, statuses] of criticalComparisons) {
+    const unique = new Set(statuses);
+    if (unique.size === 1 && unique.has("PASS")) continue;
+    if (unique.size === 1 && unique.has("FAIL")) gateReasons.push(`critical comparison expectation failed: ${key}`);
+    else gateReasons.push(`critical comparison expectation blocked or disputed: ${key}`);
+  }
+  const crossModel = {
+    judge_hosts: judgeHostPreferences,
+    judge_votes: judgeVotes,
+    independent_pairs: { ...independentPreferences, total: independentPreferences.left + independentPreferences.right + independentPreferences.tie },
+    agreement_cases: agreementCases,
+    disagreement_cases: disagreementCases,
+  };
   const gatesPassed = gateReasons.length === 0;
   const minimumEffect = options.minimumEffect ?? 0.05;
   const partitionDeltas = Object.values(partitions).map((item) => item.delta.pass_rate);
@@ -268,7 +373,7 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
   const noRegression = objectiveNonRegression && preferences.right >= preferences.left && preferences.human_left === 0;
   const verdict = determineVerdict(gatesPassed, gateReasons, effectPasses, qualitativePasses, noRegression);
   const unsignedBase = {
-    schema_version: 1 as const,
+    schema_version: 2 as const,
     comparison_id: id,
     created_at: new Date().toISOString(),
     comparison: { left: options.left, right: options.right },
@@ -280,12 +385,20 @@ export async function buildBenchmark(options: BenchmarkOptions): Promise<Benchma
     verdict,
   };
   const notes = analyzeBenchmark(unsignedBase as BenchmarkArtifact);
+  if (preferences.right === 1 && preferences.left === 0 && preferences.human_right === 0) {
+    notes.push("one independent execution pair preferred the candidate; treat this as calibration evidence, not a durable improvement");
+  }
+  if (suite?.environment) {
+    notes.push(`environment fidelity: ${suite.environment.fidelity}`);
+    if (suite.environment.external_state.length > 0) notes.push(`unfrozen external state: ${suite.environment.external_state.join(", ")}`);
+  }
+  if (requiredPartitions.includes("validation")) notes.push("validation evidence was evaluated separately from training calibration");
   const unsigned = { ...unsignedBase, notes };
   const benchmark: BenchmarkArtifact = { ...unsigned, evidence_hash: hashValue(unsigned) };
   await writeJson(join(artifactDir, "benchmark.json"), benchmark);
   await writeJson(join(runDir, "benchmarks.json"), [...previousBenchmarks, benchmark]);
   await writeJson(join(runDir, "benchmark.json"), benchmark);
   await writeFile(join(artifactDir, "benchmark.md"), `# Skill Eval Benchmark\n\n- Comparison: \`${options.left}\` -> \`${options.right}\`\n- Verdict: **${verdict}**\n- Gates: ${gatesPassed ? "pass" : gateReasons.join("; ")}\n- Attempts: ${options.attemptIds.join(", ")}\n`);
-  await writeJson(join(artifactDir, "benchmark-attempt.json"), { schema_version: 1, comparison_id: id, status: "complete", completed_at: new Date().toISOString(), left: options.left, right: options.right, attempt_ids: options.attemptIds, evidence_hash: benchmark.evidence_hash });
+  await writeJson(join(artifactDir, "benchmark-attempt.json"), { schema_version: 2, comparison_id: id, status: "complete", completed_at: new Date().toISOString(), left: options.left, right: options.right, attempt_ids: options.attemptIds, evidence_hash: benchmark.evidence_hash });
   return benchmark;
 }

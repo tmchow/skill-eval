@@ -16,7 +16,7 @@ describe("skill-eval CLI", () => {
     const result = run(["--help"]);
     const output = JSON.parse(result.stdout.toString()).help as string;
     expect(result.exitCode).toBe(0);
-    for (const command of ["preflight", "campaign-init", "campaign-list", "campaign-checkpoint", "campaign-context", "prepare", "add-version", "check-script", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "compare", "decide", "optimize", "optimize-description", "certify", "status", "persist-suite", "review-suite", "review", "record-feedback", "promote"]) {
+    for (const command of ["preflight", "campaign-init", "campaign-list", "campaign-checkpoint", "campaign-retire-case", "campaign-context", "prepare", "estimate", "critique-suite", "adjudicate-suite", "check-script", "run", "grade", "grade-model", "judge", "trigger", "benchmark", "compare", "confirm", "evidence-index", "status", "persist-suite", "review-suite", "review", "record-feedback", "invalidate-check"]) {
       expect(output).toContain(command);
     }
   });
@@ -26,7 +26,7 @@ describe("skill-eval CLI", () => {
     const attemptDir = join(runDir, "artifacts", "runs", "calibration-training");
     await mkdir(attemptDir, { recursive: true });
     await writeJson(join(attemptDir, "attempt.json"), {
-      schema_version: 1,
+      schema_version: 2,
       attempt_id: "calibration-training",
       kind: "behavior",
       status: "started",
@@ -47,7 +47,7 @@ describe("skill-eval CLI", () => {
     const runDir = await mkdtemp(join(tmpdir(), "skill-eval-status-interrupted-"));
     const attemptDir = join(runDir, "artifacts", "runs", "comparison-training");
     await mkdir(attemptDir, { recursive: true });
-    await writeJson(join(attemptDir, "attempt.json"), { schema_version: 1, attempt_id: "comparison-training", status: "interrupted", planned_records: 2, record_count: 1 });
+    await writeJson(join(attemptDir, "attempt.json"), { schema_version: 2, attempt_id: "comparison-training", status: "interrupted", planned_records: 2, record_count: 1 });
 
     const result = run(["status", "--run-dir", runDir]);
     expect(result.exitCode).toBe(0);
@@ -59,7 +59,7 @@ describe("skill-eval CLI", () => {
     for (const [id, status] of [["comparison-training", "interrupted"], ["comparison-training-retry-2", "complete"]] as const) {
       const attemptDir = join(runDir, "artifacts", "runs", id);
       await mkdir(attemptDir, { recursive: true });
-      await writeJson(join(attemptDir, "attempt.json"), { schema_version: 1, attempt_id: id, status, planned_records: 2, record_count: status === "complete" ? 2 : 1 });
+      await writeJson(join(attemptDir, "attempt.json"), { schema_version: 2, attempt_id: id, status, planned_records: 2, record_count: status === "complete" ? 2 : 1 });
     }
 
     const result = run(["status", "--run-dir", runDir]);
@@ -90,6 +90,16 @@ describe("skill-eval CLI", () => {
     expect(result.exitCode).toBe(1);
     expect(error).not.toContain("unknown option for trigger: --resume");
     expect(error).toContain("run.json");
+  });
+
+  test("accepts semantic behavior and evaluator runtime overrides", () => {
+    const compare = run([
+      "compare", "--run-dir", "/tmp/missing-run", "--left", "anchor", "--right", "authored", "--label", "probe",
+      "--hosts", "codex", "--judge-hosts", "codex",
+      "--behavior-codex-model", "codex-floor", "--behavior-codex-effort", "medium",
+      "--evaluator-codex-model", "gpt-5.6-sol", "--evaluator-codex-effort", "high",
+    ]);
+    expect(JSON.parse(compare.stderr.toString()).error).not.toContain("unknown option");
   });
 
   test("rejects options that do not belong to a command", () => {

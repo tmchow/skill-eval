@@ -29,7 +29,9 @@ async function fixtureRepo(tracked: boolean): Promise<{ root: string; target: st
   await writeFile(join(suiteDir, "fixtures", "case", "input.txt"), "fixture-v1\n");
   const suitePath = join(suiteDir, "suite.json");
   await writeFile(suitePath, JSON.stringify({
-    schema_version: 1,
+    schema_version: 2,
+    claim_class: "conformance",
+    environment: { fidelity: "isolated", external_state: [] },
     skill_name: "demo",
     hypothesis: "The revision improves the output.",
     evals: [{
@@ -39,7 +41,7 @@ async function fixtureRepo(tracked: boolean): Promise<{ root: string; target: st
       severity: "critical",
       prompt: "Create result.txt.",
       fixture: "fixtures/case",
-      expectations: [{ id: "result", text: "result exists", severity: "critical", check: { type: "file_exists", path: "result.txt" } }],
+      expectations: [{ id: "result", text: "result exists", severity: "critical", evidence_role: "outcome", check: { type: "file_exists", path: "result.txt" } }],
     }],
   }));
   git(root, ["init", "-q"]);
@@ -57,14 +59,56 @@ describe("run preparation", () => {
   test("registers prepared runs with an evaluation campaign", async () => {
     const fixture = await fixtureRepo(true);
     const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
-    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "Measure the authored improvement.", campaignRoot: join(runRoot, "campaigns"), campaignId: "linked" });
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "The revision improves the output.", campaignRoot: join(runRoot, "campaigns"), campaignId: "linked" });
     const state = await prepareRun({
       targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "campaign-run",
       campaignDir: campaign.campaign_dir, campaignRole: "calibration",
     });
 
-    expect(state.campaign).toEqual({ campaign_dir: campaign.campaign_dir, role: "calibration" });
+    expect(state.campaign).toEqual({ campaign_dir: campaign.campaign_dir, role: "calibration", measurement_goal: "The revision improves the output." });
     expect((await loadCampaign(campaign.campaign_dir)).runs).toMatchObject([{ run_id: "campaign-run", role: "calibration" }]);
+  });
+
+  test("rejects dropped campaign cases before reserving an orphan run", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "The revision improves the output.", campaignRoot: join(runRoot, "campaigns"), campaignId: "continuity" });
+    await prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "first", campaignDir: campaign.campaign_dir, campaignRole: "calibration" });
+    const suite = JSON.parse(await readFile(fixture.suitePath, "utf8"));
+    suite.evals = [];
+    suite.trigger_queries = [{ id: "trigger", query: "Evaluate this skill", should_trigger: true }];
+    await writeFile(fixture.suitePath, JSON.stringify(suite));
+
+    await expect(prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "orphan", campaignDir: campaign.campaign_dir, campaignRole: "calibration" })).rejects.toThrow("dropped protected cases");
+    await expect(stat(join(runRoot, "orphan"))).rejects.toThrow();
+  });
+
+  test("reuses the campaign's fixed anchor after HEAD moves", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "The revision improves the output.", campaignRoot: join(runRoot, "campaigns"), campaignId: "fixed-anchor" });
+    const first = await prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "first-anchor", campaignDir: campaign.campaign_dir, campaignRole: "calibration" });
+    git(fixture.root, ["add", "skills/demo"]);
+    git(fixture.root, ["commit", "-qm", "commit authored skill"]);
+    await writeFile(join(fixture.target, "SKILL.md"), "---\nname: demo\ndescription: Use when testing.\n---\n\n# Local follow-up\n");
+
+    const second = await prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "second-anchor", campaignDir: campaign.campaign_dir, campaignRole: "calibration" });
+
+    expect(second.anchor.commit).toBe(first.anchor.commit);
+    expect(await readFile(join(second.run_dir, "versions", "anchor", "SKILL.md"), "utf8")).toContain("# Original");
+    expect(await readFile(join(second.run_dir, "versions", "authored", "SKILL.md"), "utf8")).toContain("# Local follow-up");
+  });
+
+  test("rejects a suite hypothesis that differs from the confirmed campaign goal", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const campaign = await createCampaign({ targetPath: fixture.target, measurementGoal: "A stricter goal added after confirmation.", campaignRoot: join(runRoot, "campaigns"), campaignId: "mismatch" });
+
+    await expect(prepareRun({
+      targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "mismatched-run",
+      campaignDir: campaign.campaign_dir, campaignRole: "calibration",
+    })).rejects.toThrow("suite hypothesis must exactly match the confirmed campaign measurement goal");
+    await expect(stat(join(runRoot, "mismatched-run"))).rejects.toThrow();
   });
 
   test("rejects an invalid campaign role before reserving the run directory", async () => {

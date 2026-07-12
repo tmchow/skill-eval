@@ -1,7 +1,7 @@
 {
   "name": "skill-eval",
   "version": "0.1.0",
-  "description": "Run cross-model skill evals that benchmark each revision, iteratively autofix failures, and prove improvements across Claude Code and Codex.",
+  "description": "Run cross-model skill evals that benchmark source changes, diagnose failures, and deliver evidence-backed improvement advice across Claude Code and Codex.",
   "author": {
     "name": "Trevin Chow"
   },

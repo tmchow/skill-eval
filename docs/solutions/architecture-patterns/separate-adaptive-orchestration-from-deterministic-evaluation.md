@@ -1,167 +1,153 @@
 ---
-title: Separate adaptive orchestration from deterministic cross-harness evaluation
+title: Separate adaptive interpretation from deterministic skill evidence
 date: 2026-07-10
+last_updated: 2026-07-12
 category: architecture-patterns
 module: skill-eval
 problem_type: architecture_pattern
 component: tooling
 severity: medium
 applies_when:
-  - One portable skill evaluates behavior across agent harnesses with different lifecycle primitives
-  - Long-running stochastic evaluations must survive interruption without losing trustworthy evidence
-  - Promotion must depend on reproducible artifacts rather than executor self-report
+  - One portable skill evaluates behavior across agent harnesses
+  - Long stochastic evaluations must survive interruption
+  - Advice must remain distinct from reproducible evidence
 tags:
   - cross-harness
   - skill-evaluation
   - immutable-evidence
   - resumable-evaluation
-  - promotion-gates
+  - claim-validity
+  - source-isolation
 ---
 
-# Separate adaptive orchestration from deterministic cross-harness evaluation
+# Separate adaptive interpretation from deterministic skill evidence
 
 ## Context
 
-Long-running skill evaluation fails when three contracts drift apart: the claim being evaluated, the evidence mode selected for that claim, and the execution lifecycle used to collect the evidence. A deterministic check can prove that a mechanism ran while saying nothing about whether the user's outcome improved. A promotion pipeline can be correct yet waste calls if it discovers promotion preconditions late. A resumable engine can still repeat paid work if its manifest and durable record ledger disagree after a hard kill.
+Skill evaluation fails when the claim, evidence mode, or counterfactual drifts. A deterministic check can prove a mechanism ran while saying nothing about whether the user's result improved. A current-only smoke test can prove operability while saying nothing about whether a new skill earns its keep. An auto-revision loop can also blur roles: the same system that designed the test, edited the treatment, and selected the winner has too many opportunities to move the goalposts.
 
-Anthropic's `skill-creator` supplied useful methodological precedent: inject current source instead of installing it, compare paired outputs, grade observable artifacts, and use blind qualitative judgment. A portable Claude Code and Codex evaluator also needs explicit baseline semantics, held-out isolation, host-specific job supervision, incremental durability, and a machine-verifiable promotion boundary.
+Anthropic's `skill-creator` supplied useful methodology: inject current source instead of installing it, compare paired outputs, grade observable artifacts, and use blind qualitative judgment. A portable Claude Code and Codex evaluator additionally needs explicit baseline semantics, host-specific supervision, source-identity enforcement, incremental durability, and a clear evaluator/author boundary.
+
+The durable architecture is therefore:
+
+- the engine freezes and indexes facts;
+- the evaluation agent designs scenarios, interprets evidence, and advises;
+- the caller or authoring workflow edits the target;
+- a later eval tests the edited source against the same goal and fixed anchor.
 
 ## Guidance
 
-### Derive the outcome before choosing evidence
+### Derive the terminal outcome first
 
-Trace the change from mechanism to immediate effect to consumed output to terminal benefit. The primary claim belongs at the last link the user or downstream consumer values. Routing, tool invocation, artifact creation, provenance, and fold-in are supporting claims unless the user explicitly asks about those mechanics.
-
-Use this counterfactual before preparing cases:
+Trace the change from mechanism to immediate effect to consumed output to the benefit a user or downstream agent values. Ask:
 
 > Could every mechanism check pass while the intended consumer benefit remains absent?
 
-If yes, add an outcome case. Confirming that a second reviewer ran proves orchestration; it does not prove that the final review found more material issues without unacceptable noise. The runtime contract makes this distinction explicit and requires a case that fails when the benefit is absent even though the mechanism works ([SKILL.md](../../../skills/skill-eval/SKILL.md#outcome-sufficiency-gate), lines 65-88).
+If yes, the outcome layer is missing. A cross-model call, folded finding, or generated artifact can establish causality, but not improved review, planning, writing, or decision quality.
 
-Compose evidence rather than substituting one kind for another:
+Compose evidence instead of substituting it:
 
-- Trigger claims use realistic positive and adjacent-negative discovery queries.
-- Inspectable files, schemas, commands, and side effects use deterministic checks.
-- Output-quality claims use paired anonymous comparison with objective regression checks.
-- Broad end-to-end claims use the smallest branch-complete suite that preserves the causal path.
+- trigger claims use realistic positive and adjacent-negative queries;
+- inspectable files, schemas, commands, and side effects use deterministic checks;
+- quality claims use paired anonymous comparison;
+- downstream usability uses a fresh consumer only when that is the confirmed benefit.
 
-Run baseline and current versions on the same representative environment. A current-only smoke test proves operability, not improvement. A fake dependency may prove routing or fallback behavior, but it cannot replace the component claimed to create the outcome benefit.
+### Make evidence roles executable
 
-### Separate comparison from certification
+Every expectation is either `outcome` or `mechanism`.
 
-Evaluation-only comparison and promotion are different decisions.
+Outcome evidence alone can contribute positive pass-rate, qualitative preference, and effectiveness evidence. Mechanism evidence can explain a causal path and a critical failure can block success, but a passing mechanism cannot manufacture an improvement. This rule belongs in benchmark, grader, and judge code rather than relying on report prose.
 
-`compare` requires a training case, distinct versions, and valid hosts before execution. It runs the training partition, grades it, performs blind paired judgment, and builds a comparison-scoped benchmark without sealing a promotable decision ([comparison.ts](../../../skills/skill-eval/scripts/lib/comparison.ts), lines 28-76).
+Claim classes limit conclusions:
 
-`certify` requires both training and held-out behavior cases before allocating attempts or calling a model. It evaluates both partitions and only then tries to seal a decision ([optimizer.ts](../../../skills/skill-eval/scripts/lib/optimizer.ts), lines 148-208).
+- **Conformance** validates a trigger, route, gate, format, or fallback.
+- **Effectiveness** requires paired current/anchor outcome evidence.
+- **Generalization** additionally requires outcome evidence in training and separate validation situations.
 
-Use the narrowest valid path:
+For a new skill, the anchor is normal no-skill behavior. Authored-only evidence never establishes improvement.
 
-- `run` plus `grade` for focused objective behavior.
-- `compare` for paired quality or evaluation-only calibration.
-- `certify` only when promotion is in scope and both evidence partitions exist.
+### Critique measurement design before outputs
 
-This avoids paying for a training matrix only to discover that a deliberately focused suite has no promotion holdout.
+The orchestrator that inferred the change may design scenarios around its own assumptions. An independent critic should inspect the frozen skill, baseline, fixtures, hypothesis, and expectations before effectiveness execution. It tests whether the scenarios discriminate the terminal benefit, preserve constitutive context, resist superficial checks, and project treatment identity symmetrically.
 
-### Fail fast and classify missing evidence honestly
+Critics advise; the confirmed campaign goal remains scope authority. A critical issue cannot be waived as a limitation. An accepted issue requires a replacement immutable run. Do not rerun critics until one agrees.
 
-Every precondition that can be checked without a model should fail before the first model call: partition coverage, distinct and existing versions, nonempty host sets, dependencies, authentication, and bounded command probes.
+### Preserve the counterfactual across development states
 
-After execution, a timeout is inconclusive rather than a regression. A failed baseline is also inconclusive; otherwise its artificial zero score can manufacture an improvement. Benchmark gates block either-side timeouts, baseline execution failure, candidate execution failure, and candidate critical failure before computing a verdict ([benchmark.ts](../../../skills/skill-eval/scripts/lib/benchmark.ts), lines 185-240).
+The current arm is always the repository target's current bytes, whether uncommitted, committed, pushed, or mixed. The anchor is selected independently: `HEAD` for local edits, merge-base for branch/PR work, an explicit ref when requested, or no-skill when the target is absent at that ref.
 
-Blind preferences must belong to the exact judgment batch that produced them. When more than one compatible batch exists, benchmark construction requires an explicit comparison ID instead of aggregating stale judgments.
+Repository source identity is a validity condition. Same-name installed skills are neither an anchor nor valid current execution. Behavior prompts receive an exact snapshot path; host traces that reveal another source fail closed.
 
-### Let the host supervise the outer job
+### Treat evaluator failures as failed evidence
 
-The invoking harness owns launch, waiting, cancellation, and completion notification for the outer Bun command. The engine owns frozen inputs, subprocesses, artifacts, manifests, resume, and model-free status.
+Mechanical correctness is not semantic validity. A negative substring check for `safe to merge` fails the correct phrase `not safe to merge`. Reading the answer can diagnose that one run, but cannot rehabilitate the check quantitatively.
 
-Claude Code should use background Bash and native monitoring. Codex should keep the command attached to a persistent exec session. Both can read durable behavior-attempt progress with `status`; the attached host command remains the completion authority for later grading, judging, and benchmarking phases. Do not add `nohup`, `setsid`, or another `&` layer: a wrapper may exit while the real evaluator is still running ([hosts.md](../../../skills/skill-eval/references/hosts.md), lines 5-12).
+Record invalidation against the exact attempt, case, and expectation. Block the evidence, replace the suite for every arm, and preserve the prior case across the campaign unless the invalidation supports explicit retirement. This prevents unfavorable cases from disappearing after results are known.
 
-Timeouts follow phase cost, not one global ceiling. Executors need room for nested agents and cleanup; graders and judges are shorter; revisers may need longer editing time. A timeout ceiling is not a runtime estimate. Independent executor, grader, and judge calls use bounded concurrency so long evaluations overlap safely without unbounded fan-out.
+### Keep comparison and confirmation distinct
 
-### Persist each arm and reconcile crash skew
+`compare` runs training calibration. It asks whether current looks better under a frozen initial suite and helps find invalid checks or missing evidence. It does not seal a durable claim.
 
-Each completed execution is a durability unit. Persist its execution record and deterministic grade immediately, then resume only keys that are missing. Reconstruct completed work from the aggregate ledger and per-arm artifacts.
+`confirm` requires a generalization suite, the exact prepared host scope, both training and validation outcome evidence, and the same fixed anchor. It writes a hash-bound evidence claim. It still does not mutate the target.
 
-Do not require the attempt manifest counter to equal the durable record count. A hard kill can land after `executions.json` is durable but before `attempt.json` advances. A started or interrupted attempt is reusable when:
+This replaces promotion-shaped evaluator logic with an evidence boundary. The caller decides whether advice warrants an edit, makes that edit outside Skill Eval, and invokes a new run.
 
-```text
-manifest.record_count <= durable_records <= manifest.planned_records
-```
+### Persist facts, let an agent reason
 
-That predicate is enforced in [artifacts.ts](../../../skills/skill-eval/scripts/lib/artifacts.ts), lines 21-35. Status reports the greater durable count and marks an abandoned attempt `superseded` when a completed retry exists ([status.ts](../../../skills/skill-eval/scripts/lib/status.ts), lines 33-64).
+Long sessions compact. Conversation summaries are lossy and must not become the evidence source. The engine should build a deterministic index containing source hashes, requested/completed hosts, executions, outcome/mechanism grades, judgments, invalidations, benchmarks, and failures. The index contains no diagnosis or suggested fix.
 
-### Keep model-visible identity opaque and engine identity unique
+The agent writes append-only reasoning checkpoints after material passes. A final report is authored by reading the campaign goal, evidence index, checkpoints, and raw artifacts behind surprising claims. This keeps adaptive judgment without pretending generated prose is objective.
 
-Graders, judges, and revisers operate in temporary workspaces outside the main run directory. They receive only the evidence needed for one task. Anonymous A/B paths and hashed scratch identities reduce version leakage; held-out prompts and results stay outside revision feedback.
+### Let the host supervise long commands
 
-Opacity does not replace uniqueness. Engine archive keys must include every distinguishing dimension: attempt, case, executor host, version, repetition, and grader host. Model-grader archives include the version even though the model-facing scratch path uses an opaque execution hash ([model-grader.ts](../../../skills/skill-eval/scripts/lib/model-grader.ts), lines 67-105).
+The invoking harness owns launch, waiting, cancellation, and completion notification for the outer Bun process. Claude Code uses background Bash and native monitoring. Codex keeps the command attached to a persistent exec session. The engine owns child processes, durable status, artifacts, and resume.
 
-Use frozen fixture-backed script probes for deterministic bundled-script contracts. They run in a separate copied workspace, receive the frozen skill through `SKILL_DIR`, prepend fixture-local fake CLIs to `PATH`, fail on mutation or timeout, and persist their evidence ([script-checks.ts](../../../skills/skill-eval/scripts/lib/script-checks.ts), lines 48-117). These probes prove mechanism behavior, not subjective output quality.
+Do not add `nohup`, `setsid`, or an extra `&`. A wrapper can exit while the actual evaluator still runs. A foreground wait ceiling is not a target-skill failure; use model-free status and resume only missing cells.
+
+### Count independent outcomes honestly
+
+One baseline/current execution pair is one independent outcome. Multiple judges on that pair measure adjudication agreement, not sample size. A failed baseline is inconclusive rather than an artificial zero. Timed-out, malformed, source-mutating, and wrong-source cells remain in the ledger but cannot reach qualitative graders or blind judges.
+
+Repetition count is empirical, not ritual. Start with calibration, add runs only when variance or disagreement can change the conclusion, and retain a generous runaway cap solely for unattended safety.
 
 ## Why This Matters
 
-The combined pattern turns a fragile command chain into a restartable evidence state machine:
+This architecture prevents the most damaging false positives:
 
-- Outcome-first claim design prevents green wiring checks from masquerading as user benefit.
-- Compare/certify separation avoids unnecessary model spend and promotion-shaped overclaims.
-- Exact evidence scoping prevents prior runs or judgments from contaminating a verdict.
-- Host-native supervision avoids false completion from detached wrappers.
-- Incremental persistence limits interruption loss to the currently in-flight arms, bounded by configured concurrency.
-- Opaque workspaces protect blindness and held-out evidence while injective archive keys prevent collisions.
-- Fail-closed grading and sealed decisions keep executor self-report out of the trust boundary.
+- green wiring checks reported as user benefit;
+- authored-only smoke tests reported as new-skill effectiveness;
+- failed baselines manufacturing apparent improvement;
+- post-result suite edits erasing regressions;
+- installed copies contaminating repository-source tests;
+- multiple judge votes inflating independent sample counts;
+- evaluator advice being mistaken for measured evidence;
+- context compaction replacing artifact-backed reasoning.
 
-## When to Apply
+It also simplifies ownership. Skill Eval evaluates, diagnoses, and advises. Skill creators and callers author changes. Re-invocation tests whether those changes actually improved the confirmed outcome.
 
-- A skill change claims better output quality but is implemented through routing, orchestration, tool selection, or reference loading.
-- Evaluation may exceed the host's foreground command window.
-- Training and held-out evidence have different disclosure rules.
-- Retries must preserve already-paid model work.
-- Claude Code and Codex must evaluate the same frozen skill with different process primitives.
-- Promotion must be reproducible from immutable evidence rather than a prose summary.
-
-Use a narrower path when the claim is narrower. Trigger discovery does not need behavior execution. A deterministic routing contract may stop at `check-script`, `run`, and `grade`. A quality claim needs paired outcome comparison. Promotion adds holdout and certification only when requested.
-
-## Examples
-
-### Mechanism plus outcome
+## Example
 
 ```text
-Primary outcome: the final review finds more material defects without materially increasing noise.
-Mechanism check: structured events show exactly one cross-model reviewer call.
-Outcome check: blind judges compare baseline/current reviews on issue coverage, correctness, and noise.
-Regression checks: no duplicate findings, unrelated expansion, or change to the normal path.
+Hypothesis:
+  The current document-review skill finds more material defects without
+  materially increasing unsupported findings.
+
+Outcome evidence:
+  Blind current/anchor comparison of final reviews on representative plans.
+
+Mechanism evidence:
+  Every activated peer completed and its result reached synthesis.
+
+Regression evidence:
+  Routine documents do not invoke the peer; normal review still completes.
+
+Calibration:
+  One paired run on the invoking host, then the same frozen evidence on the
+  second host if valid.
+
+Confirmation:
+  Training plus separate validation tasks against the same fixed anchor.
+
+Advice:
+  Evidence-linked diagnosis returned to the authoring workflow; no target edit.
 ```
-
-### Evaluation-only versus promotion-grade
-
-```bash
-# Directional calibration: training evidence only, no sealed decision.
-bun "$SKILL_DIR/scripts/skill-eval.ts" compare \
-  --run-dir "$RUN_DIR" --left anchor --right authored \
-  --label calibration --hosts claude,codex --judge-hosts claude,codex \
-  --repetitions 1 --executor-timeout-ms 1800000
-
-# Promotion gate: the frozen suite must contain training and held-out cases.
-bun "$SKILL_DIR/scripts/skill-eval.ts" certify \
-  --run-dir "$RUN_DIR" --candidate authored --incumbent anchor \
-  --label final --hosts claude,codex --judge-hosts claude,codex \
-  --repetitions 3 --executor-timeout-ms 1800000
-```
-
-### Recoverable manifest skew
-
-```text
-executions.json records: 7
-attempt.json record_count: 6
-attempt.json planned_records: 10
-attempt status: started
-```
-
-This is resumable, not corrupt. Reconstruct the seven durable keys and execute only the remaining three arms.
-
-## Related
-
-- [Cross-harness skill eval design](../../plans/2026-07-09-cross-harness-skill-eval-design.md)
-- [Cross-harness skill eval implementation](../../plans/2026-07-09-cross-harness-skill-eval-implementation.md)
-- [Superset remediation plan](../../plans/2026-07-09-skill-eval-superset-remediation.md)

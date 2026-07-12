@@ -1,4 +1,4 @@
 interface:
   display_name: "Skill Eval"
-  short_description: "Cross-model skill evals with iterative autofixes"
-  default_prompt: "Evaluate my current skill change against the appropriate development baseline using only the evidence needed for the requested claim; improve or promote it only when requested."
+  short_description: "Cross-model skill evals with evidence-backed advice"
+  default_prompt: "Evaluate my current skill change against the appropriate development baseline, diagnose what the evidence establishes, and recommend improvements without editing the target skill."
