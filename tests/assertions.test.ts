@@ -202,5 +202,6 @@ describe("deterministic grading", () => {
 
     expect(result.summary.run_failed).toBe(true);
     expect(result.expectations[0]?.passed).toBe(false);
+    expect(result.expectations[0]?.evidence).toContain("wrong_skill_source=true");
   });
 });

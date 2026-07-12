@@ -197,7 +197,9 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
         grades.push(grade);
         await writeJson(join(runDir, "gradings.json"), grades);
       }
-      await writeJson(manifestPath, { ...manifest, record_count: attemptRecords.size });
+      if (resumedManifest?.status !== "complete") {
+        await writeJson(manifestPath, { ...manifest, record_count: attemptRecords.size });
+      }
     });
     persistence = operation;
     await operation;

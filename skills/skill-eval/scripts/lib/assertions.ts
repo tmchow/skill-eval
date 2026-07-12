@@ -109,7 +109,7 @@ async function recordedToolResults(eventPath: string): Promise<Array<{ tool: str
 async function inspect(record: ExecutionRecord, check: DeterministicCheck): Promise<{ passed: boolean; evidence: string }> {
   if (check.type === "exit_success") {
     const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && record.host_result.malformed_events === 0 && !record.source_mutated && !record.wrong_skill_source;
-    return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, malformed_events=${record.host_result.malformed_events}, source_mutated=${record.source_mutated}` };
+    return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, malformed_events=${record.host_result.malformed_events}, source_mutated=${record.source_mutated}, wrong_skill_source=${record.wrong_skill_source === true}` };
   }
   if (check.type === "final_contains" || check.type === "final_not_contains") {
     const found = matches(record.host_result.final_text, check.value, check.regex);

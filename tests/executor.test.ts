@@ -290,6 +290,22 @@ describe("matrix execution", () => {
     expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
   });
 
+  test("preserves a completed manifest while backfilling missing aggregate grades", async () => {
+    const { runDir, adapter } = await preparedRun();
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "complete-backfill", adapters: { codex: adapter } });
+    const gradingPath = join(runDir, "gradings.json");
+    const manifestPath = join(runDir, "artifacts", "runs", "complete-backfill", "attempt.json");
+    const manifestBefore = await readFile(manifestPath, "utf8");
+    await writeJson(gradingPath, []);
+
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "complete-backfill", resume: true, adapters: { codex: adapter } });
+
+    expect(adapter.requests).toHaveLength(1);
+    expect(await readJson<any[]>(gradingPath)).toHaveLength(1);
+    expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
+    expect((await readJson<any>(manifestPath)).status).toBe("complete");
+  });
+
   test("invalidates evidence when the live target changes during execution", async () => {
     const { runDir, adapter } = await preparedRun();
     const state = await readJson<RunState>(join(runDir, "run.json"));
