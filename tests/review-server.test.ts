@@ -6,9 +6,9 @@ import { join } from "node:path";
 const serverScript = join(import.meta.dir, "..", "skills", "skill-eval", "scripts", "review-server.js");
 const rootsToStop: string[] = [];
 
-async function command(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const process = Bun.spawn(["bun", serverScript, ...args], { stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]);
+async function command(args: string[], env?: Record<string, string>): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const child = Bun.spawn([process.execPath, serverScript, ...args], { stdout: "pipe", stderr: "pipe", env: { ...process.env, ...env } });
+  const [exitCode, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
   return { exitCode, stdout, stderr };
 }
 
@@ -54,4 +54,24 @@ test("reports status and stops the server by display root", async () => {
   expect(JSON.parse(result.stdout).status).toBe("stopped");
   result = await command(["status", "--root", root]);
   expect(JSON.parse(result.stdout).status).toBe("stopped");
+});
+
+test("refuses to signal a pid when process ownership cannot be verified", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "skill-eval-review-ownership-"));
+  const state = join(root, "state");
+  const bin = join(root, "bin");
+  await fs.mkdir(state, { recursive: true });
+  await fs.mkdir(bin, { recursive: true });
+  const fakePs = join(bin, "ps");
+  await fs.writeFile(fakePs, "#!/bin/sh\nexit 1\n");
+  await fs.chmod(fakePs, 0o755);
+  const sleeper = Bun.spawn(["sleep", "30"]);
+  await fs.writeFile(join(state, "server.pid"), `${sleeper.pid}\n`);
+
+  const result = await command(["stop", "--root", root], { PATH: `${bin}:${process.env.PATH ?? ""}` });
+
+  expect(result.exitCode).toBe(0);
+  expect(() => process.kill(sleeper.pid, 0)).not.toThrow();
+  sleeper.kill();
+  await sleeper.exited;
 });

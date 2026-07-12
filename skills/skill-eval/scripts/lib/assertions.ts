@@ -108,7 +108,7 @@ async function recordedToolResults(eventPath: string): Promise<Array<{ tool: str
 
 async function inspect(record: ExecutionRecord, check: DeterministicCheck): Promise<{ passed: boolean; evidence: string }> {
   if (check.type === "exit_success") {
-    const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && record.host_result.malformed_events === 0 && !record.source_mutated;
+    const passed = record.host_result.exit_code === 0 && !record.host_result.timed_out && record.host_result.malformed_events === 0 && !record.source_mutated && !record.wrong_skill_source;
     return { passed, evidence: passed ? "executor exited successfully" : `exit=${record.host_result.exit_code}, timed_out=${record.host_result.timed_out}, malformed_events=${record.host_result.malformed_events}, source_mutated=${record.source_mutated}` };
   }
   if (check.type === "final_contains" || check.type === "final_not_contains") {
@@ -161,7 +161,7 @@ export async function gradeExecution(record: ExecutionRecord, evalCase: EvalCase
   for (const expectation of evalCase.expectations) {
     if (!expectationAppliesTo(expectation, record.version)) continue;
     if (!expectation.check) {
-      expectations.push({ ...expectation, passed: null, blocked: false, evidence: "qualitative expectation reserved for blind judges" });
+      expectations.push({ ...expectation, passed: null, blocked: false, evidence: "qualitative expectation reserved for model grading or blind comparison" });
       continue;
     }
     try {
@@ -178,7 +178,7 @@ export async function gradeExecution(record: ExecutionRecord, evalCase: EvalCase
   const blocked = measured.filter((item) => item.blocked).length;
   const qualitative = measured.filter((item) => item.passed === null && !item.blocked).length;
   const graded = passed + failed;
-  const runFailed = record.host_result.exit_code !== 0 || record.host_result.timed_out || record.host_result.malformed_events > 0 || record.source_mutated;
+  const runFailed = record.host_result.exit_code !== 0 || record.host_result.timed_out || record.host_result.malformed_events > 0 || record.source_mutated || record.wrong_skill_source === true;
   const expectationCriticalFailures = expectations.filter((item) => item.severity === "critical" && item.passed === false).length;
   const caseCriticalFailure = evalCase.severity === "critical" && failed > 0 && expectationCriticalFailures === 0 ? 1 : 0;
   return {

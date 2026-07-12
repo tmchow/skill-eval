@@ -40,10 +40,10 @@ SKILL_DIR="<absolute path of this skill directory>"; DISPLAY_ROOT="/tmp/skill-ev
 
 ## Rebuild Evidence
 
-Rebuild the affected anchor/current benchmark with the same versions and execution attempt IDs, but a fresh comparison ID. The engine counts only feedback matching the original anonymous comparison and attempts.
+Rebuild the affected anchor/current benchmark with the same versions, execution attempt IDs, judgment comparison, and evidence partitions, but a fresh benchmark ID. The engine counts only feedback matching the original anonymous comparison and attempts.
 
 ```bash
-SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" benchmark --run-dir "<run-dir>" --left "anchor" --right "authored" --attempts "<training-attempt>,<validation-attempt>" --comparison-id "<fresh-reviewed-comparison-id>"
+SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" benchmark --run-dir "<run-dir>" --left "anchor" --right "authored" --attempts "<attempt-ids>" --judgment-comparison-id "<judgment-comparison-id>" --comparison-id "<fresh-reviewed-benchmark-id>" --partitions "<training-or-training,validation>"
 ```
 
 Human judgment never edits a pre-review benchmark or waives objective, critical, coverage, validation, or hash gates. If the response remains ambiguous, report the comparison as inconclusive.

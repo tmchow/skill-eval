@@ -191,4 +191,16 @@ describe("deterministic grading", () => {
     expect(result.summary.critical_failed).toBeGreaterThan(0);
     expect(result.expectations.find((item) => item.id === "exit")?.passed).toBe(false);
   });
+
+  test("fails the run when execution used a same-name installed skill", async () => {
+    const record = await execution();
+    record.wrong_skill_source = true;
+    const result = await gradeExecution(record, {
+      ...evalCase,
+      expectations: [{ id: "exit", text: "executor used the frozen source", severity: "critical", evidence_role: "outcome", check: { type: "exit_success" } }],
+    });
+
+    expect(result.summary.run_failed).toBe(true);
+    expect(result.expectations[0]?.passed).toBe(false);
+  });
 });

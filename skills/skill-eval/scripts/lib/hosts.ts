@@ -1,4 +1,5 @@
-import { appendFile, cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { appendFile, cp, mkdir, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { redactSecrets, runProcess } from "./process.ts";
@@ -8,6 +9,20 @@ export const DEFAULT_CODEX_MODEL = "gpt-5.6-sol";
 export const DEFAULT_CODEX_REASONING_EFFORT = "high";
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-4-8";
 export const DEFAULT_CLAUDE_REASONING_EFFORT = "high";
+const REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh", "max"]);
+
+export function validatedReasoningEffort(value: string | undefined, fallback: string): string {
+  const effort = value ?? fallback;
+  if (!REASONING_EFFORTS.has(effort)) throw new Error(`invalid reasoning effort: ${effort}`);
+  return effort;
+}
+
+export function resolvedRuntimeIdentity(host: HostName, model?: string, reasoningEffort?: string): { model: string; reasoning_effort: string } {
+  return {
+    model: model ?? (host === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL),
+    reasoning_effort: validatedReasoningEffort(reasoningEffort, host === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : DEFAULT_CLAUDE_REASONING_EFFORT),
+  };
+}
 
 export interface HostAdapterOptions {
   commands?: Partial<Record<HostName, string>>;
@@ -41,7 +56,7 @@ export function buildClaudeArgs(request: Pick<HostRequest, "finalPath" | "model"
     "--output-format", "stream-json",
     "--verbose",
     "--model", model,
-    "--effort", request.reasoningEffort ?? DEFAULT_CLAUDE_REASONING_EFFORT,
+    "--effort", validatedReasoningEffort(request.reasoningEffort, DEFAULT_CLAUDE_REASONING_EFFORT),
     "-p",
   ];
 }
@@ -58,7 +73,7 @@ export function buildCodexArgs(request: Pick<HostRequest, "cwd" | "finalPath" | 
     "--sandbox", "workspace-write",
     "--skip-git-repo-check",
     "--model", model,
-    "-c", `model_reasoning_effort="${request.reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT}"`,
+    "-c", `model_reasoning_effort="${validatedReasoningEffort(request.reasoningEffort, DEFAULT_CODEX_REASONING_EFFORT)}"`,
     "-C", request.cwd,
     "-o", request.finalPath,
     ...(request.outputSchemaPath ? ["--output-schema", request.outputSchemaPath] : []),
@@ -67,11 +82,11 @@ export function buildCodexArgs(request: Pick<HostRequest, "cwd" | "finalPath" | 
 }
 
 export function effectiveRuntimeProfile(host: HostName, request: HostRequest): EffectiveRuntimeProfile {
+  const identity = resolvedRuntimeIdentity(host, request.model, request.reasoningEffort);
   return {
     role: request.role ?? "behavior",
     host,
-    model: request.model ?? (host === "codex" ? DEFAULT_CODEX_MODEL : DEFAULT_CLAUDE_MODEL),
-    reasoning_effort: request.reasoningEffort ?? (host === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : DEFAULT_CLAUDE_REASONING_EFFORT),
+    ...identity,
     context_mode: request.contextMode ?? "isolated",
     capabilities: [...new Set(request.capabilities ?? [])],
   };
@@ -145,9 +160,15 @@ async function preserveClaudeBackgroundResults(events: Array<Record<string, any>
     if (seen.has(key) || !path.includes(`${sep}tasks${sep}`) || !roots.some((root) => path.startsWith(`${root}${sep}`))) continue;
     seen.add(key);
     try {
-      const info = await stat(path);
-      if (!info.isFile() || info.size > 2 * 1024 * 1024) continue;
-      const content = redactSecrets(await readFile(path, "utf8"), env);
+      const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      let content: string;
+      try {
+        const info = await handle.stat();
+        if (!info.isFile() || info.size > 2 * 1024 * 1024) continue;
+        content = redactSecrets(await handle.readFile({ encoding: "utf8" }), env);
+      } finally {
+        await handle.close();
+      }
       await appendFile(eventPath, `${JSON.stringify({
         type: "user",
         message: { role: "user", content: [{ type: "tool_result", tool_use_id: event.tool_use_id, content, is_error: false }] },

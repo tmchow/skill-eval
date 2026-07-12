@@ -47,7 +47,7 @@ const allowedOptions: Record<Command, Set<string>> = {
   "grade-model": new Set(["run-dir", "attempts", "grading-id", "grader-hosts", "timeout-ms", "concurrency", ...genericRuntimeOptions]),
   judge: new Set(["run-dir", "left", "right", "attempts", "comparison-id", "judge-hosts", "timeout-ms", "concurrency", "seed", ...genericRuntimeOptions]),
   trigger: new Set(["run-dir", "version", "hosts", "repetitions", "timeout-ms", "concurrency", "attempt-id", "partition", "queries", "resume", ...genericRuntimeOptions, "max-model-calls", "max-elapsed-ms"]),
-  benchmark: new Set(["run-dir", "left", "right", "attempts", "comparison-id", "judgment-comparison-id", "minimum-effect"]),
+  benchmark: new Set(["run-dir", "left", "right", "attempts", "comparison-id", "judgment-comparison-id", "minimum-effect", "partitions"]),
   compare: new Set(["run-dir", "left", "right", "label", "hosts", "judge-hosts", "repetitions", "executor-timeout-ms", "grader-timeout-ms", "judge-timeout-ms", ...genericRuntimeOptions, ...behaviorRuntimeOptions, ...evaluatorRuntimeOptions]),
   confirm: new Set(["run-dir", "label", "hosts", "judge-hosts", "repetitions", "executor-timeout-ms", "grader-timeout-ms", "judge-timeout-ms", ...genericRuntimeOptions, ...behaviorRuntimeOptions, ...evaluatorRuntimeOptions]),
   "evidence-index": new Set(["run-dir"]),
@@ -145,6 +145,15 @@ function partition(options: Map<string, string[]>, required = false): "training"
   return value as "training" | "validation" | "all";
 }
 
+function evidencePartitions(options: Map<string, string[]>): Array<"training" | "validation"> | undefined {
+  if (!options.has("partitions")) return undefined;
+  const values = list(options, "partitions");
+  if (values.length === 0 || values.some((value) => !["training", "validation"].includes(value))) {
+    throw new Error("--partitions must contain training, validation, or both");
+  }
+  return [...new Set(values)] as Array<"training" | "validation">;
+}
+
 function limits(options: Map<string, string[]>) {
   return {
     ...(options.has("max-model-calls") ? { max_model_calls: numberOption(options, "max-model-calls", 1) } : {}),
@@ -221,7 +230,7 @@ async function main(): Promise<unknown> {
     case "trigger":
       return runTriggerSuite({ runDir: option(o, "run-dir")!, version: option(o, "version")!, hosts: hosts(o), repetitions: numberOption(o, "repetitions", 3), timeoutMs: numberOption(o, "timeout-ms", 60_000), concurrency: numberOption(o, "concurrency", 6), attemptId: option(o, "attempt-id", false), partition: partition(o, true), queryIds: o.has("queries") ? list(o, "queries") : undefined, models: models(o), reasoningEfforts: reasoningEfforts(o), limits: limits(o), resume: option(o, "resume", false) === "true" });
     case "benchmark":
-      return buildBenchmark({ runDir: option(o, "run-dir")!, left: option(o, "left")!, right: option(o, "right")!, attemptIds: list(o, "attempts"), comparisonId: option(o, "comparison-id", false), judgmentComparisonId: option(o, "judgment-comparison-id", false), minimumEffect: numberOption(o, "minimum-effect", 0.05) });
+      return buildBenchmark({ runDir: option(o, "run-dir")!, left: option(o, "left")!, right: option(o, "right")!, attemptIds: list(o, "attempts"), comparisonId: option(o, "comparison-id", false), judgmentComparisonId: option(o, "judgment-comparison-id", false), minimumEffect: numberOption(o, "minimum-effect", 0.05), partitions: evidencePartitions(o) });
     case "compare":
       return compareVersions({ runDir: option(o, "run-dir")!, left: option(o, "left")!, right: option(o, "right")!, label: option(o, "label")!, hosts: hosts(o), judgeHosts: hosts(o, "judge-hosts"), repetitions: numberOption(o, "repetitions", 1), executorTimeoutMs: numberOption(o, "executor-timeout-ms", 1_800_000), graderTimeoutMs: numberOption(o, "grader-timeout-ms", 300_000), judgeTimeoutMs: numberOption(o, "judge-timeout-ms", 300_000), models: models(o), reasoningEfforts: reasoningEfforts(o), runtimeProfiles: runtimeProfiles(o) });
     case "confirm":

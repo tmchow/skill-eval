@@ -158,7 +158,7 @@ async function writeAnonymousPackage(record: ExecutionRecord, grade: GradingResu
   await writeJson(join(evidence, "objective-grading.json"), {
     schema_version: 2,
     expectations: grade.expectations
-      .filter((item) => (item.passed !== null || item.blocked) && (item.version_scope === undefined || item.version_scope === "all"))
+      .filter((item) => item.evidence_role === "outcome" && (item.passed !== null || item.blocked) && (item.version_scope === undefined || item.version_scope === "all"))
       .map((item) => ({
         id: item.id,
         severity: item.severity,

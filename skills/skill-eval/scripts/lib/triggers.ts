@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createIsolatedCodexHome, DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, effectiveRuntimeProfile } from "./hosts.ts";
+import { createIsolatedCodexHome, DEFAULT_CLAUDE_MODEL, DEFAULT_CLAUDE_REASONING_EFFORT, DEFAULT_CODEX_MODEL, DEFAULT_CODEX_REASONING_EFFORT, effectiveRuntimeProfile, resolvedRuntimeIdentity, validatedReasoningEffort } from "./hosts.ts";
 import { copyTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { environment, redactSecrets, terminateProcessTree } from "./process.ts";
 import { createOperation } from "./operations.ts";
@@ -103,11 +103,11 @@ interface TriggerProcessRequest {
 }
 
 export function buildClaudeTriggerArgs(pluginRoot: string, model?: string, reasoningEffort?: string): string[] {
-  return ["--plugin-dir", pluginRoot, "--setting-sources", "", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", "Skill,Read", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--model", model ?? DEFAULT_CLAUDE_MODEL, "--effort", reasoningEffort ?? DEFAULT_CLAUDE_REASONING_EFFORT, "-p"];
+  return ["--plugin-dir", pluginRoot, "--setting-sources", "", "--strict-mcp-config", "--permission-mode", "dontAsk", "--tools", "Skill,Read", "--output-format", "stream-json", "--verbose", "--no-session-persistence", "--model", model ?? DEFAULT_CLAUDE_MODEL, "--effort", validatedReasoningEffort(reasoningEffort, DEFAULT_CLAUDE_REASONING_EFFORT), "-p"];
 }
 
 export function buildCodexTriggerArgs(workDir: string, model?: string, reasoningEffort?: string): string[] {
-  return ["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", "--model", model ?? DEFAULT_CODEX_MODEL, "-c", `model_reasoning_effort="${reasoningEffort ?? DEFAULT_CODEX_REASONING_EFFORT}"`, "-C", workDir, "-"];
+  return ["exec", "--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--skip-git-repo-check", "--model", model ?? DEFAULT_CODEX_MODEL, "-c", `model_reasoning_effort="${validatedReasoningEffort(reasoningEffort, DEFAULT_CODEX_REASONING_EFFORT)}"`, "-C", workDir, "-"];
 }
 
 async function runUntilTrigger(request: TriggerProcessRequest): Promise<{ exitCode: number; triggered: boolean; timedOut: boolean; stderr: string }> {
@@ -257,13 +257,17 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
     schema_version: 2, attempt_id: id, kind: "trigger", status: "started", created_at: new Date().toISOString(),
     partition, version: options.version, hosts: [...options.hosts], query_ids: queries.map((item) => item.id),
     repetitions: options.repetitions ?? 3, planned_records: tasks.length,
+    runtime_profiles: Object.fromEntries(options.hosts.map((host) => [host, resolvedRuntimeIdentity(host, options.models?.[host], options.reasoningEfforts?.[host])])),
   };
+  let resumedStatus: string | undefined;
   if (await Bun.file(manifestPath).exists()) {
     if (!options.resume) throw new Error(`attempt id already exists: ${id}`);
     const existing = await readJson<typeof manifest & { status: string }>(manifestPath);
-    for (const key of ["partition", "version", "hosts", "query_ids", "repetitions", "planned_records"] as const) {
+    resumedStatus = existing.status;
+    for (const key of ["partition", "version", "hosts", "query_ids", "repetitions", "planned_records", "runtime_profiles"] as const) {
       if (JSON.stringify(existing[key]) !== JSON.stringify(manifest[key])) throw new Error(`cannot resume trigger attempt ${id}: ${key} changed`);
     }
+    if (!["started", "interrupted", "complete"].includes(existing.status)) throw new Error(`cannot resume trigger attempt ${id}: invalid status ${existing.status}`);
   } else {
     if (previous.some((record) => record.attempt_id === id)) throw new Error(`trigger attempt ${id} has records but no manifest`);
     await reserveArtifactDir(attemptRoot);
@@ -271,6 +275,10 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   }
   const attemptRecords = new Map(previous.filter((item) => item.attempt_id === id).map((item) => [triggerKey(item), item]));
   const remaining = tasks.filter((task) => !attemptRecords.has(triggerKey({ host: task.host, query_id: task.query.id, version: options.version, repetition: task.repetition })));
+  if (resumedStatus === "complete") {
+    if (remaining.length > 0) throw new Error(`cannot resume completed trigger attempt ${id}: evidence is incomplete`);
+    return tasks.map((task) => attemptRecords.get(triggerKey({ host: task.host, query_id: task.query.id, version: options.version, repetition: task.repetition }))!);
+  }
   const ownedOperation = options.operation ? null : await createOperation(runDir, { kind: "trigger", phase: `${partition} queries`, planned_units: remaining.length, limits: options.limits });
   const operation = options.operation ?? ownedOperation!;
   let persistence = Promise.resolve();

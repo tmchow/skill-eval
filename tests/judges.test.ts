@@ -191,7 +191,7 @@ describe("blind judges", () => {
     }
     const gradings = await readJson<any[]>(join(runDir, "gradings.json"));
     for (const grade of gradings) {
-      grade.expectations = [{ id: grade.version === "challenger" ? "peer-invoked" : "common", text: "mechanism", severity: "diagnostic", version_scope: grade.version === "challenger" ? "candidate" : "all", passed: true, blocked: false, evidence: "security-lens-codex (+1 anchor) tool trace" }];
+      grade.expectations = [{ id: grade.version === "challenger" ? "peer-invoked" : "common", text: "mechanism", severity: "diagnostic", evidence_role: grade.version === "challenger" ? "mechanism" : "outcome", version_scope: grade.version === "challenger" ? "candidate" : "all", passed: true, blocked: false, evidence: "security-lens-codex (+1 anchor) tool trace" }];
     }
     await writeJson(join(runDir, "gradings.json"), gradings);
     const codex = new JudgeAdapter("codex", "TIE");
@@ -242,6 +242,7 @@ describe("blind judges", () => {
     for (const grade of gradings) {
       grade.expectations = [
         { id: "common", text: "common", severity: "diagnostic", evidence_role: "outcome", version_scope: "all", passed: true, blocked: false, evidence: "common evidence" },
+        { id: "shared-mechanism", text: "mechanism", severity: "diagnostic", evidence_role: "mechanism", version_scope: "all", passed: grade.version === "challenger", blocked: false, evidence: `${grade.version} mechanism evidence` },
         ...(grade.version === "challenger" ? [{ id: "candidate-mechanism", text: "candidate only", severity: "critical", evidence_role: "mechanism", version_scope: "candidate", passed: true, blocked: false, evidence: "candidate evidence" }] : []),
       ];
     }
@@ -253,5 +254,7 @@ describe("blind judges", () => {
     expect(codex.objectiveEvidence).toContain("common");
     expect(codex.objectiveEvidence).not.toContain("candidate-mechanism");
     expect(codex.objectiveEvidence).not.toContain("candidate evidence");
+    expect(codex.objectiveEvidence).not.toContain("shared-mechanism");
+    expect(codex.objectiveEvidence).not.toContain("mechanism evidence");
   });
 });

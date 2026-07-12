@@ -65,7 +65,7 @@ function processArguments(pid) {
 
 function ownsServerProcess(options, pid) {
   const argumentsText = processArguments(pid);
-  return argumentsText === null || (argumentsText.includes(scriptPath) && argumentsText.includes("serve") && argumentsText.includes(options.root));
+  return argumentsText !== null && argumentsText.includes(scriptPath) && argumentsText.includes("serve") && argumentsText.includes(options.root);
 }
 
 function ownerPid() {
@@ -169,7 +169,8 @@ async function serve(options) {
   server.listen(options.port, options.host, () => {
     const address = server.address();
     const port = typeof address === "object" && address ? address.port : options.port;
-    const info = { status: "running", root: options.root, host: options.host, port, url: `http://localhost:${port}`, screen_dir: options.screensDir, state_dir: options.stateDir, pid: process.pid, owner_pid: options.ownerPid ?? null };
+    const displayHost = ["127.0.0.1", "::1"].includes(options.host) ? "localhost" : options.host;
+    const info = { status: "running", root: options.root, host: options.host, port, url: `http://${displayHost}:${port}`, screen_dir: options.screensDir, state_dir: options.stateDir, pid: process.pid, owner_pid: options.ownerPid ?? null };
     fs.writeFileSync(options.pidFile, `${process.pid}\n`);
     fs.writeFileSync(options.infoFile, `${JSON.stringify(info, null, 2)}\n`);
     output(info);

@@ -51,6 +51,7 @@ export interface Expectation {
   comparison_goal?: ComparisonGoal;
   version_scope?: VersionScope;
   prerequisite?: boolean;
+  outcome_basis?: "terminal-action";
   check?: DeterministicCheck;
 }
 
@@ -291,6 +292,7 @@ export interface BehaviorAttemptManifest {
   repetitions: number;
   planned_records: number;
   record_count: number;
+  runtime_profiles: Partial<Record<HostName, { model: string; reasoning_effort: string }>>;
   completed_at?: string;
   interrupted_at?: string;
 }

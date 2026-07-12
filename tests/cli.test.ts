@@ -102,6 +102,14 @@ describe("skill-eval CLI", () => {
     expect(JSON.parse(compare.stderr.toString()).error).not.toContain("unknown option");
   });
 
+  test("accepts explicit benchmark evidence partitions", () => {
+    const accepted = run(["benchmark", "--run-dir", "/tmp/missing-run", "--left", "anchor", "--right", "authored", "--attempts", "training", "--partitions", "training"]);
+    expect(JSON.parse(accepted.stderr.toString()).error).not.toContain("unknown option");
+
+    const rejected = run(["benchmark", "--run-dir", "/tmp/missing-run", "--left", "anchor", "--right", "authored", "--attempts", "training", "--partitions", "holdout"]);
+    expect(JSON.parse(rejected.stderr.toString()).error).toContain("--partitions must contain training, validation, or both");
+  });
+
   test("rejects options that do not belong to a command", () => {
     const result = run(["grade", "--run-dir", "/tmp/run", "--bogus", "value"]);
     expect(result.exitCode).toBe(1);

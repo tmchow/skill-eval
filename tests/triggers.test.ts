@@ -138,6 +138,34 @@ test("checkpoints completed trigger probes and resumes only missing work", async
   expect(results).toHaveLength(4);
 });
 
+test("keeps completed trigger attempts immutable and pins runtime identity", async () => {
+  const runDir = await mkdtemp(join(tmpdir(), "skill-eval-trigger-complete-"));
+  const skillPath = join(runDir, "skill");
+  await mkdir(skillPath);
+  await writeFile(join(skillPath, "SKILL.md"), "---\nname: demo\ndescription: Use when evaluating skills.\n---\n# Demo\n");
+  const now = new Date().toISOString();
+  await writeJson(join(runDir, "run.json"), {
+    schema_version: 2, run_id: "r", run_dir: runDir, created_at: now, target_path: skillPath, repo_root: runDir, skill_name: "demo",
+    invoking_host: "codex", requested_hosts: ["codex"], anchor: { kind: "none" }, versions: { authored: { path: skillPath, parent: null, created_at: now } },
+    hashes: { versions: { anchor: null, authored: await hashTree(skillPath) }, fixtures: {}, suite: "s" }, git: { initial_clean: false, initial_status: "", branch: null, head: null, target_tracked: false },
+  });
+  await writeJson(join(runDir, "suite.json"), {
+    schema_version: 2, claim_class: "conformance", skill_name: "demo", hypothesis: "trigger", evals: [],
+    trigger_queries: [{ id: "positive", query: "Evaluate this skill", should_trigger: true }],
+  });
+  let calls = 0;
+  const probe = async () => { calls += 1; return { triggered: true, duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }; };
+  await runTriggerSuite({ runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "complete", partition: "training", models: { codex: "gpt-5.6-sol" }, reasoningEfforts: { codex: "high" }, probe });
+  const manifestPath = join(runDir, "artifacts", "triggers", "complete", "attempt.json");
+  const before = await Bun.file(manifestPath).text();
+
+  await runTriggerSuite({ runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "complete", partition: "training", models: { codex: "gpt-5.6-sol" }, reasoningEfforts: { codex: "high" }, resume: true, probe });
+  expect(calls).toBe(1);
+  expect(await Bun.file(manifestPath).text()).toBe(before);
+
+  await expect(runTriggerSuite({ runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "complete", partition: "training", models: { codex: "different" }, reasoningEfforts: { codex: "high" }, resume: true, probe })).rejects.toThrow("runtime_profiles changed");
+});
+
 test("surfaces cross-host disagreement separately from aggregate trigger accuracy", () => {
   const result = (host: "claude" | "codex", repetition: number, triggered: boolean) => ({
     schema_version: 2 as const, attempt_id: "a", partition: "validation" as const, created_at: new Date().toISOString(), host,

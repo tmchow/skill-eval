@@ -54,6 +54,7 @@ function validateExpectation(value: unknown, evalId: string, index: number): Exp
   const comparisonGoal = expectation.comparison_goal === undefined ? undefined : text(expectation.comparison_goal, `eval ${evalId} expectation ${index}.comparison_goal`) as ComparisonGoal;
   const versionScope = expectation.version_scope === undefined ? undefined : text(expectation.version_scope, `eval ${evalId} expectation ${index}.version_scope`) as VersionScope;
   const prerequisite = expectation.prerequisite === true;
+  const outcomeBasis = expectation.outcome_basis === undefined ? undefined : text(expectation.outcome_basis, `eval ${evalId} expectation ${index}.outcome_basis`);
   if (scope !== undefined && !expectationScopes.has(scope)) throw new Error(`eval ${evalId} expectation ${index}.scope must be execution or comparison`);
   if (scope === "comparison" && expectation.check !== undefined) throw new Error(`eval ${evalId} expectation ${index} cannot use a deterministic check with comparison scope`);
   if (scope === "comparison" && evidenceRole !== "outcome") throw new Error(`eval ${evalId} expectation ${index}.comparison scope requires evidence_role outcome`);
@@ -66,6 +67,11 @@ function validateExpectation(value: unknown, evalId: string, index: number): Exp
     throw new Error(`eval ${evalId} expectation ${index}.prerequisite requires a critical execution-scoped deterministic check`);
   }
   if (prerequisite && evidenceRole !== "mechanism") throw new Error(`eval ${evalId} expectation ${index}.prerequisite requires evidence_role mechanism`);
+  if (outcomeBasis !== undefined && outcomeBasis !== "terminal-action") throw new Error(`eval ${evalId} expectation ${index}.outcome_basis must be terminal-action`);
+  const rawCheckType = String((expectation.check as Record<string, unknown> | undefined)?.type ?? "");
+  if (outcomeBasis !== undefined && (evidenceRole !== "outcome" || !rawCheckType.startsWith("tool_"))) {
+    throw new Error(`eval ${evalId} expectation ${index}.outcome_basis is only valid for outcome tool checks`);
+  }
   return {
     id: identifier(expectation.id, `eval ${evalId} expectation ${index}.id`),
     text: text(expectation.text, `eval ${evalId} expectation ${index}.text`),
@@ -75,6 +81,7 @@ function validateExpectation(value: unknown, evalId: string, index: number): Exp
     comparison_goal: comparisonGoal,
     version_scope: versionScope,
     prerequisite,
+    outcome_basis: outcomeBasis as "terminal-action" | undefined,
     check: validateCheck(expectation.check, `eval ${evalId} expectation ${index}.check`),
   };
 }
@@ -195,6 +202,15 @@ export function validateSuite(value: unknown): EvalSuite {
   if (claimClass !== "conformance" && environment === undefined) throw new Error(`${claimClass} suites must declare suite.environment fidelity and external_state`);
   if (claimClass !== "conformance" && evals.length > 0 && !evals.some((item) => item.expectations.some((expectation) => expectation.evidence_role === "outcome"))) {
     throw new Error(`${claimClass} behavior suites require outcome evidence`);
+  }
+  if (claimClass !== "conformance") {
+    for (const evalCase of evals) {
+      for (const expectation of evalCase.expectations) {
+        if (expectation.evidence_role === "outcome" && expectation.check?.type.startsWith("tool_") && expectation.outcome_basis !== "terminal-action") {
+          throw new Error(`eval ${evalCase.id} outcome tool check ${expectation.id} must declare outcome_basis terminal-action or be labeled mechanism`);
+        }
+      }
+    }
   }
   if (claimClass === "generalization" && evals.length > 0) {
     for (const partition of ["training", "validation"] as const) {

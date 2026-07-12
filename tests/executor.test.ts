@@ -11,6 +11,7 @@ class FakeAdapter implements HostAdapter {
   prompts: string[] = [];
   requests: HostRequest[] = [];
   mutateSkill = false;
+  mutateTargetPath: string | null = null;
   wrongSkillPath: string | null = null;
   failOnCall: number | null = null;
 
@@ -20,6 +21,7 @@ class FakeAdapter implements HostAdapter {
     this.requests.push(request);
     const skillMatch = request.prompt.match(/Exact skill snapshot: (.+)/);
     if (this.mutateSkill && skillMatch) await writeFile(join(skillMatch[1]!, "MUTATED"), "bad");
+    if (this.mutateTargetPath) await writeFile(join(this.mutateTargetPath, "LIVE-MUTATION"), "bad");
     await writeFile(request.eventPath, this.wrongSkillPath
       ? `${JSON.stringify({ type: "item.completed", item: { type: "command_execution", command: `cat ${this.wrongSkillPath}` } })}\n`
       : '{"type":"turn.completed"}\n');
@@ -271,5 +273,29 @@ describe("matrix execution", () => {
       status: "complete",
       record_count: 2,
     });
+  });
+
+  test("does not rewrite completed evidence on a no-op resume", async () => {
+    const { runDir, adapter } = await preparedRun();
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "complete-resume", adapters: { codex: adapter } });
+    const gradingPath = join(runDir, "gradings.json");
+    const manifestPath = join(runDir, "artifacts", "runs", "complete-resume", "attempt.json");
+    const gradingBefore = await readFile(gradingPath, "utf8");
+    const manifestBefore = await readFile(manifestPath, "utf8");
+
+    await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "complete-resume", resume: true, adapters: { codex: adapter } });
+
+    expect(adapter.requests).toHaveLength(1);
+    expect(await readFile(gradingPath, "utf8")).toBe(gradingBefore);
+    expect(await readFile(manifestPath, "utf8")).toBe(manifestBefore);
+  });
+
+  test("invalidates evidence when the live target changes during execution", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const state = await readJson<RunState>(join(runDir, "run.json"));
+    adapter.mutateTargetPath = state.target_path;
+
+    await expect(runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "live-target-mutation", adapters: { codex: adapter } })).rejects.toThrow("target skill changed during execution");
+    expect(await readJson<any>(join(runDir, "artifacts", "runs", "live-target-mutation", "attempt.json"))).toMatchObject({ status: "interrupted" });
   });
 });

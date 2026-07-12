@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildClaudeArgs, buildCodexArgs, createHostAdapters } from "../skills/skill-eval/scripts/lib/hosts.ts";
@@ -81,6 +81,8 @@ printf '%s\\n' '{"type":"turn.completed"}'
     expect(codex).toContain("codex-test");
     expect(defaultCodex[defaultCodex.indexOf("--model") + 1]).toBe("gpt-5.6-sol");
     expect(defaultCodex).toContain('model_reasoning_effort="high"');
+    expect(() => buildCodexArgs({ cwd: "/tmp/work", finalPath: "/tmp/final.md", reasoningEffort: 'high" -c sandbox_mode="danger-full-access' })).toThrow("invalid reasoning effort");
+    expect(() => buildClaudeArgs({ finalPath: "/tmp/final.md", reasoningEffort: "extreme" })).toThrow("invalid reasoning effort");
   });
 
   test("applies explicit reasoning effort and records the effective runtime profile", async () => {
@@ -207,6 +209,27 @@ printf '%s\n' '{"type":"result","result":"done"}'
     expect(events).toContain("claude_background_task_output");
     expect(events).toContain("wrote 3 finding(s)");
     expect(events).toContain('"tool_use_id":"tool-1"');
+  });
+
+  test("does not follow symlinked Claude background output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skill-eval-background-symlink-"));
+    const taskRoot = join(tmpdir(), "claude-test", "symlink-session", "tasks");
+    await mkdir(taskRoot, { recursive: true });
+    const secret = join(root, "secret.txt");
+    const output = join(taskRoot, "peer.output");
+    await writeFile(secret, "must-not-enter-evidence\n");
+    await rm(output, { force: true });
+    await symlink(secret, output);
+    const claude = await executable(root, "fake-claude-symlink", `
+cat >/dev/null
+printf '%s\n' '{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"tool-1","status":"completed","output_file":"${output}"}'
+printf '%s\n' '{"type":"result","result":"done"}'
+`);
+    const eventPath = join(root, "events.jsonl");
+    await createHostAdapters({ commands: { claude } }).claude.execute({ cwd: root, prompt: "task", eventPath, stderrPath: join(root, "stderr"), finalPath: join(root, "final"), timeoutMs: 5_000 });
+
+    expect(await readFile(eventPath, "utf8")).not.toContain("must-not-enter-evidence");
+    expect(await readFile(eventPath, "utf8")).not.toContain("claude_background_task_output");
   });
 
   test("kills a host process after the configured timeout", async () => {

@@ -77,11 +77,13 @@ describe("eval suite validation", () => {
     expect(() => validateSuite(value)).toThrow("must define at least one expectation");
   });
 
-  test("accepts deterministic tool-call trace expectations", () => {
+  test("requires an explicit terminal-action basis for effectiveness tool outcomes", () => {
     const value = structuredClone(validSuite) as any;
     value.evals[0].expectations = [
       { id: "peer", text: "peer launched once", severity: "critical", evidence_role: "outcome", check: { type: "tool_call_count", value: "cross-model-doc-review.sh", count: 1 } },
     ];
+    expect(() => validateSuite(value)).toThrow("must declare outcome_basis terminal-action or be labeled mechanism");
+    value.evals[0].expectations[0].outcome_basis = "terminal-action";
     expect(validateSuite(value).evals[0]!.expectations[0]!.check!.type).toBe("tool_call_count");
   });
 

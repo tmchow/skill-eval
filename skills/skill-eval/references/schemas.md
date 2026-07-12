@@ -81,6 +81,7 @@ Every expectation requires `evidence_role: "outcome" | "mechanism"`:
 - Outcome expectations alone contribute positive pass-rate, model-grade, blind-preference, and effectiveness evidence.
 - Mechanism expectations establish causal support. A failed critical mechanism can gate the claim; a passing mechanism cannot improve the comparative score.
 - `prerequisite: true` is allowed only on a critical deterministic mechanism expectation.
+- In effectiveness or generalization suites, a `tool_*` check labeled as an outcome must also set `outcome_basis: "terminal-action"`. Use this only when the tool action or returned side effect is itself what the user consumes, such as sending the requested message. Internal routing, peer launch, and orchestration remain mechanism evidence.
 
 Qualitative expectations accept `scope: "execution" | "comparison"`, defaulting to `execution`. Comparison scope requires `comparison_goal: "improve" | "not-worse"` and is judged only from anonymous pairs. Deterministic checks cannot use comparison scope.
 
@@ -106,7 +107,7 @@ Fixture paths are relative to the suite file and cannot escape it. `environment.
 - `{"type":"tool_result_contains","tool":"cross-model-review.sh","value":"complete"}`
 - `{"type":"exit_success"}`
 
-Paths default to `outputs/`; use `root: "workspace"` for fixture-repository files. Tool checks inspect structured host events, not prompt text. `tool_result_contains` proves usable completion, while `tool_called` proves launch only. Final-output substring checks prove literal wording, not semantic intent.
+Paths default to `outputs/`; use `root: "workspace"` for fixture-repository files. Tool checks inspect structured host events, not prompt text. `tool_result_contains` proves usable completion, while `tool_called` proves launch only. For comparative claims, mark a tool check as `outcome` only when the action itself is terminal and declare `outcome_basis: "terminal-action"`; otherwise mark it `mechanism`. Final-output substring checks prove literal wording, not semantic intent.
 
 ## Critique Adjudication
 

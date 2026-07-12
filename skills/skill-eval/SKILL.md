@@ -131,6 +131,12 @@ SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/ski
 
 Critics test whether scenarios can answer the confirmed hypothesis, whether the baseline discriminates, whether outcome evidence reaches the consumer benefit, and whether treatment-identifying evidence is symmetrically projected. Critics advise; the campaign goal remains scope authority. Adjudicate every issue once. A critical issue cannot be waived as a limitation, and an accepted issue requires a replacement prepared run. Do not rerun critics merely to search for approval.
 
+Write one adjudication JSON object using the schema in `references/schemas.md`, then record every critic issue exactly once:
+
+```bash
+SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" adjudicate-suite --run-dir "<run-dir>" --input "<adjudication-json>"
+```
+
 ## 4. Execute The Smallest Resolving Test
 
 For a paired training calibration:

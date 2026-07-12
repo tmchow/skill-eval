@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmod, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareRun, verifyRunIntegrity } from "../skills/skill-eval/scripts/lib/workspace.ts";
+import { persistSuite, prepareRun, verifyRunIntegrity } from "../skills/skill-eval/scripts/lib/workspace.ts";
 import { createCampaign, loadCampaign } from "../skills/skill-eval/scripts/lib/campaign.ts";
 
 function git(cwd: string, args: string[]): void {
@@ -184,6 +184,19 @@ describe("run preparation", () => {
 
     await expect(prepareRun(options)).rejects.toThrow("artifact directory already exists");
     expect(await readFile(join(state.run_dir, "versions", "authored", "SKILL.md"), "utf8")).toBe(original);
+  });
+
+  test("persists reusable suites outside the target skill tree", async () => {
+    const fixture = await fixtureRepo(true);
+    const runRoot = await mkdtemp(join(tmpdir(), "skill-eval-runs-"));
+    const state = await prepareRun({ targetPath: fixture.target, suitePath: fixture.suitePath, hosts: ["codex"], invokingHost: "codex", runRoot, runId: "persist-boundary" });
+    const skillBefore = await readFile(join(fixture.target, "SKILL.md"), "utf8");
+
+    const result = await persistSuite(state.run_dir);
+
+    expect(result.path).toBe(join(state.repo_root, ".skill-eval", "demo", "suite.json"));
+    expect(await readFile(join(fixture.target, "SKILL.md"), "utf8")).toBe(skillBefore);
+    expect(result.path.startsWith(`${state.target_path}/`)).toBe(false);
   });
 
   test("rejects symlinks that could change frozen skill bytes after preparation", async () => {

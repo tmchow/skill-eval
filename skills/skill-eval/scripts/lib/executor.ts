@@ -4,7 +4,7 @@ import { delimiter, join, resolve } from "node:path";
 import { mapLimit } from "./async.ts";
 import { gradeExecution } from "./assertions.ts";
 import { containedPath, copyTree, hashTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
-import { createHostAdapters, effectiveRuntimeProfile } from "./hosts.ts";
+import { createHostAdapters, effectiveRuntimeProfile, resolvedRuntimeIdentity } from "./hosts.ts";
 import { assertSuiteApproved } from "./suite-critic.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
 import type { BehaviorAttemptManifest, EvidencePartition, ExecutionRecord, GradingResult, HostAdapter, HostName } from "./types.ts";
@@ -120,6 +120,8 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
   await assertSuiteApproved(runDir);
   const state = await loadRun(runDir);
   const suite = await loadSuite(runDir);
+  const targetHashBefore = await hashTree(state.target_path);
+  if (targetHashBefore !== state.hashes.versions.authored) throw new Error("target skill changed since prepare; prepare a new run");
   const id = attemptId(options.attemptId);
   let previous: ExecutionRecord[] = [];
   try { previous = await readJson<ExecutionRecord[]>(join(runDir, "executions.json")); } catch { /* first matrix */ }
@@ -149,15 +151,18 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
     schema_version: 2, attempt_id: id, kind: "behavior", status: "started", created_at: new Date().toISOString(),
     partition, versions: [...options.versions], hosts: [...options.hosts], eval_ids: selectedEvals.map((item) => item.id),
     repetitions: options.repetitions ?? 1, planned_records: tasks.length, record_count: 0,
+    runtime_profiles: Object.fromEntries(options.hosts.map((host) => [host, resolvedRuntimeIdentity(host, options.models?.[host], options.reasoningEfforts?.[host])])),
   };
   const manifestExists = await Bun.file(manifestPath).exists();
+  let resumedManifest: BehaviorAttemptManifest | undefined;
   if (!manifestExists) {
     await reserveArtifactDir(attemptRoot);
     await writeJson(manifestPath, manifest);
   } else {
     if (!options.resume) throw new Error(`attempt id already exists: ${id}`);
     const existing = await readJson<BehaviorAttemptManifest>(manifestPath);
-    for (const key of ["partition", "versions", "hosts", "eval_ids", "repetitions", "planned_records"] as const) {
+    resumedManifest = existing;
+    for (const key of ["partition", "versions", "hosts", "eval_ids", "repetitions", "planned_records", "runtime_profiles"] as const) {
       if (JSON.stringify(existing[key]) !== JSON.stringify(manifest[key])) throw new Error(`cannot resume attempt ${id}: ${key} changed`);
     }
     if (!["started", "interrupted", "complete"].includes(existing.status)) throw new Error(`cannot resume attempt ${id}: invalid status ${String(existing.status)}`);
@@ -180,24 +185,34 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
     const operation = persistence.then(async () => {
       attemptRecords.set(recordKey(record), record);
       const key = recordKey(record);
-      previous = previous.filter((item) => item.attempt_id !== id || recordKey(item) !== key);
-      previous.push(record);
-      await writeJson(join(runDir, "executions.json"), previous);
-      const evalCase = suite.evals.find((item) => item.id === record.eval_id);
-      if (!evalCase) throw new Error(`execution references missing eval: ${record.eval_id}`);
-      const grade = await gradeExecution(record, evalCase);
-      await writeJson(join(record.run_dir, "grading.json"), grade);
-      grades = grades.filter((item) => item.attempt_id !== id || recordKey(item) !== key);
-      grades.push(grade);
-      await writeJson(join(runDir, "gradings.json"), grades);
+      if (!previous.some((item) => item.attempt_id === id && recordKey(item) === key)) {
+        previous.push(record);
+        await writeJson(join(runDir, "executions.json"), previous);
+      }
+      if (!grades.some((item) => item.attempt_id === id && recordKey(item) === key)) {
+        const evalCase = suite.evals.find((item) => item.id === record.eval_id);
+        if (!evalCase) throw new Error(`execution references missing eval: ${record.eval_id}`);
+        const grade = await gradeExecution(record, evalCase);
+        await writeJson(join(record.run_dir, "grading.json"), grade);
+        grades.push(grade);
+        await writeJson(join(runDir, "gradings.json"), grades);
+      }
       await writeJson(manifestPath, { ...manifest, record_count: attemptRecords.size });
     });
     persistence = operation;
     await operation;
   }
 
-  for (const record of attemptRecords.values()) await persistRecord(record);
+  for (const record of attemptRecords.values()) {
+    const key = recordKey(record);
+    if (!previous.some((item) => item.attempt_id === id && recordKey(item) === key)
+      || !grades.some((item) => item.attempt_id === id && recordKey(item) === key)) await persistRecord(record);
+  }
   const remaining = tasks.filter((task) => !attemptRecords.has(taskKey(task)));
+  if (resumedManifest?.status === "complete") {
+    if (remaining.length > 0) throw new Error(`cannot resume completed attempt ${id}: evidence is incomplete`);
+    return tasks.map((task) => attemptRecords.get(taskKey(task))!);
+  }
   try {
     await mapLimit(remaining, options.concurrency ?? 2, async (task): Promise<ExecutionRecord> => {
       const evalCase = suite.evals.find((item) => item.id === task.evalId)!;
@@ -306,6 +321,12 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
     throw error;
   }
   const records = tasks.map((task) => attemptRecords.get(taskKey(task))!);
+  let targetHashAfter: string | null = null;
+  try { targetHashAfter = await hashTree(state.target_path); } catch { /* target removal is mutation */ }
+  if (targetHashAfter !== targetHashBefore) {
+    await writeJson(manifestPath, { ...manifest, status: "interrupted", interrupted_at: new Date().toISOString(), record_count: records.length });
+    throw new Error("target skill changed during execution; evidence is invalid");
+  }
   await writeJson(manifestPath, { ...manifest, status: "complete", completed_at: new Date().toISOString(), record_count: records.length });
   return records;
 }
