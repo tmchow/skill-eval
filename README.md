@@ -190,7 +190,6 @@ The adaptive work stays with the agent: understanding the change, creating reali
 | Approach | Best for | Boundary |
 |---|---|---|
 | **Skill Eval** | Cross-model repository-source benchmarking, diagnosis, and regression evidence from Claude Code or Codex | Evaluates and advises; another workflow owns edits |
-| **Claude Code `plugin eval`** | Native plugin eval cases with a no-plugin baseline inside Claude Code | Claude-native; Skill Eval adds a portable Claude/Codex entrypoint and cross-runtime evidence model |
 | **Claude Code `skill-creator` evals** | Creating and iterating skills inside Claude Code with Anthropic's native workflow | Host-native and closely coupled to skill authoring |
 | **Deterministic tests** | Parsers, scripts, schemas, and exact side effects | Cannot alone establish open-ended document or decision quality |
 | **Manual prompt testing** | Fast intuition and exploratory checks | Baseline, environment, and judgment standards drift easily |
