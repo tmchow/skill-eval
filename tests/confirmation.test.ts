@@ -9,8 +9,10 @@ import type { HostAdapter, HostRequest, HostResult, RunState } from "../skills/s
 
 class ConfirmationAdapter implements HostAdapter {
   name = "codex" as const;
+  calls = 0;
 
   async execute(request: HostRequest): Promise<HostResult> {
+    this.calls += 1;
     const baseline = request.prompt.includes("No additional skill instructions");
     const finalText = baseline ? "baseline" : "useful result";
     await writeFile(request.eventPath, "{}\n");
@@ -68,6 +70,13 @@ test("confirms authored against anchor and seals a mutation-free evidence claim"
   expect(result.claim.claim_hash).toMatch(/^[a-f0-9]{64}$/);
   expect(await hashTree(target)).toBe(targetHash);
   expect(await Bun.file(join(runDir, "promotion", "backup")).exists()).toBe(false);
+});
+
+test("defaults confirmation to one repetition", async () => {
+  const { runDir, adapter } = await fixture();
+  await confirmAuthored({ runDir, label: "confirmation-default", hosts: ["codex"], judgeHosts: ["codex"], adapters: { codex: adapter } });
+
+  expect(adapter.calls).toBe(4);
 });
 
 test("confirmation requires the exact frozen host scope", async () => {

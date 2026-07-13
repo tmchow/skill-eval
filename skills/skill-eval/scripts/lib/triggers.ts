@@ -246,7 +246,7 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   const tasks: Array<{ query: typeof queries[number]; host: HostName; repetition: number }> = [];
   for (const query of queries) {
     for (const host of options.hosts) {
-      for (let repetition = 1; repetition <= (options.repetitions ?? 3); repetition += 1) {
+      for (let repetition = 1; repetition <= (options.repetitions ?? 1); repetition += 1) {
         tasks.push({ query, host, repetition });
       }
     }
@@ -256,7 +256,7 @@ export async function runTriggerSuite(options: TriggerSuiteOptions): Promise<Tri
   const manifest = {
     schema_version: 2, attempt_id: id, kind: "trigger", status: "started", created_at: new Date().toISOString(),
     partition, version: options.version, hosts: [...options.hosts], query_ids: queries.map((item) => item.id),
-    repetitions: options.repetitions ?? 3, planned_records: tasks.length,
+    repetitions: options.repetitions ?? 1, planned_records: tasks.length,
     runtime_profiles: Object.fromEntries(options.hosts.map((host) => [host, resolvedRuntimeIdentity(host, options.models?.[host], options.reasoningEfforts?.[host])])),
   };
   let resumedStatus: string | undefined;

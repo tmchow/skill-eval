@@ -47,6 +47,11 @@ test("trigger suite measures precision and recall from raw prompts", async () =>
     probe: async (_host, request) => ({ triggered: request.query.includes("this skill"), duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }),
   });
   expect(validation.map((item) => item.query_id)).toEqual(["validation"]);
+  const defaultRepetition = await runTriggerSuite({
+    runDir, version: "authored", hosts: ["codex"], attemptId: "default-repetition", partition: "validation",
+    probe: async (_host, request) => ({ triggered: request.query.includes("this skill"), duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }),
+  });
+  expect(defaultRepetition).toHaveLength(1);
   await expect(runTriggerSuite({
     runDir, version: "authored", hosts: ["codex"], repetitions: 1, attemptId: "validation", partition: "validation",
     probe: async () => ({ triggered: false, duration_ms: 1, event_path: join(runDir, "probe.jsonl"), error: null }),

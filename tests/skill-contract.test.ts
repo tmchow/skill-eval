@@ -84,10 +84,21 @@ describe("runtime skill contract", () => {
   test("separates training calibration from mutation-free confirmation", async () => {
     const skill = await read("skills/skill-eval/SKILL.md");
     const schemas = await read("skills/skill-eval/references/schemas.md");
-    expect(skill).toContain("`confirm` only when the claim warrants generalization");
+    expect(skill).toContain("`confirm` only when the confirmed measurement goal claims generalization");
     expect(skill).toContain("It never changes the target");
     expect(schemas).toContain("`compare` runs training calibration");
     expect(schemas).toContain("`confirm` requires a generalization suite");
+  });
+
+  test("stops when evidence is decision-sufficient", async () => {
+    const skill = await read("skills/skill-eval/SKILL.md");
+    expect(skill).toContain("Decision-sufficient evidence is terminal");
+    expect(skill).toContain("One favorable case cannot establish that breadth");
+    expect(skill).toContain("Do not confuse scenario breadth with repetition count");
+    expect(skill).toContain("If neither result would change the decision, stop");
+    expect(skill).toContain("An unfavorable target result is evidence");
+    expect(skill).toContain("Do not escalate an effectiveness evaluation into confirmation");
+    expect(skill).not.toContain("--repetitions 3");
   });
 
   test("keeps communication value-first", async () => {

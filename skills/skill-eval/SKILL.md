@@ -7,7 +7,7 @@ description: Evaluate and diagnose agent skills without installing them. Use whe
 
 Evaluate one primary skill against a fixed development baseline. Produce reproducible evidence, a calibrated conclusion, and concrete improvement advice. Do not edit the target skill, generate challenger versions, select a revision, commit, or promote. The caller or authoring workflow owns changes; after it edits the skill, invoke Skill Eval again against the same campaign goal.
 
-Skill Eval provides cost-bounded triangulation, not exhaustive certification. Add evidence only when it can materially change confidence in the confirmed hypothesis.
+Skill Eval provides cost-bounded triangulation, not exhaustive certification. Add evidence only when it can materially change the conclusion or advice for the confirmed hypothesis. Decision-sufficient evidence is terminal, but evidence is not decision-sufficient until the confirmed suite's material improvement and regression boundaries have run. Do not keep running merely to maximize confidence.
 
 ## Required Decisions
 
@@ -93,7 +93,9 @@ Use the narrowest execution boundary that preserves the causal link. Trigger-onl
 
 Assume skills target both Claude Code and Codex. When both hosts are ready, recommend both and calibrate on the invoking host first. After valid calibration, automatically run the same frozen evidence on the second host within the confirmed scope. A one-host sanity check is acceptable only when explicitly requested, genuinely host-specific, fully deterministic, or forced by unavailable coverage or a hard user budget; state that it does not establish cross-host behavior.
 
-Start with one repetition when it can calibrate the claim. Add repetitions only when observed variance, disagreement, or host differences could reverse the conclusion. Model-call and elapsed-time ceilings are runaway safety pauses, not evidence thresholds.
+Design the smallest **sufficient** suite before execution. A broad effectiveness claim normally needs distinct realistic improvement situations plus the material regression, restraint, fallback, or adjacent-negative boundaries implicated by the change. One favorable case cannot establish that breadth; one case is enough only for a genuinely narrow deterministic contract. Do not confuse scenario breadth with repetition count.
+
+Start with one repetition per case when it can calibrate feasibility and variance. Before adding evidence beyond the confirmed suite, name the unresolved uncertainty and how each plausible result would change the verdict or advice. If neither result would change the decision, stop. Add repetitions only when observed variance, disagreement, or host differences could reverse the conclusion. Model-call and elapsed-time ceilings are runaway safety pauses, not evidence thresholds.
 
 The suite hypothesis states the terminal improvement plus material regression and restraint boundaries. It must not contain repetition counts, judge counts, or budgets unless the user made them part of the requested behavior.
 
@@ -109,7 +111,7 @@ Draft the suite in OS temp and get exact direct-call counts with `estimate`. Do 
 SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" estimate --suite "<draft-suite-json>" --workflow "<run|compare>" --versions "<anchor,authored-or-authored>" --hosts "<calibration-hosts>" [--judge-hosts "<judge-hosts>"] [--critic-hosts "<critic-hosts>"] --repetitions 1 --partition training
 ```
 
-In under 180 words, present: the exact measurement goal, how scenarios test improvement, regression/trigger coverage, recommended hosts and calibration sequence, direct call count, and what remains unknown. State plainly that this run evaluates and advises but will not edit. Wait for confirmation.
+In under 180 words, present: the exact measurement goal, how scenarios test improvement, regression/trigger coverage, recommended hosts and calibration sequence, direct call count, stopping condition, and what remains unknown. State plainly that this run evaluates and advises but will not edit. Wait for confirmation.
 
 ## 3. Prepare And Critique Evidence
 
@@ -159,14 +161,14 @@ A timeout is inconclusive, not a regression. Raise a ceiling only from a known n
 
 If a deterministic check is semantically wrong after raw inspection, run `invalidate-check`. The result becomes blocked, not passed. Replace the check for every arm in a new prepared run. Campaign case retirement additionally requires this hash-bound invalidation evidence.
 
-After valid invoking-host calibration, complete already-confirmed second-host coverage. Add repetitions only if uncertainty could change the verdict. Stop when the hypothesis is supported, rejected, or genuinely inconclusive at the confirmed scope.
+After valid invoking-host calibration, complete already-confirmed second-host coverage. Add repetitions only if uncertainty could change the verdict. Stop when the hypothesis is supported, rejected, or genuinely inconclusive at the confirmed scope. An unfavorable target result is evidence, not a reason to redesign the suite or add rounds until the hypothesis passes. Ask before any material expansion beyond the confirmed plan, giving the unresolved question and incremental direct-call count.
 
 ## 5. Confirm And Build The Evidence Record
 
-Use `confirm` only when the claim warrants generalization. It reruns authored versus the same fixed anchor across training and validation, requires the exact prepared host scope, and seals a hash-bound evidence claim. It never changes the target.
+Use `confirm` only when the confirmed measurement goal claims generalization. Do not escalate an effectiveness evaluation into confirmation merely because stronger confidence is possible. Confirmation reruns authored versus the same fixed anchor across training and validation, requires the exact prepared host scope, and seals a hash-bound evidence claim. It never changes the target. Its default is one repetition; increase it only under the decision-change rule above.
 
 ```bash
-SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" confirm --run-dir "<run-dir>" --label confirmation --hosts "<prepared-hosts>" --judge-hosts "<ready-evaluator-hosts>" --repetitions 3
+SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" confirm --run-dir "<run-dir>" --label confirmation --hosts "<prepared-hosts>" --judge-hosts "<ready-evaluator-hosts>"
 ```
 
 Build the factual evidence index after material passes and before reporting:

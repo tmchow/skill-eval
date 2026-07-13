@@ -76,7 +76,7 @@ Consider only branches relevant to the mechanism:
 - format and output modes;
 - downstream consumer or router behavior.
 
-Create the smallest set where each case proves one material boundary. More paraphrases of the same branch are not broader coverage. Minimize redundant proofs within the mechanism, outcome, and regression layers; do not remove a required layer merely because another is cheaper to inspect.
+Create the smallest sufficient set where each case proves one material boundary. One favorable finding or scenario cannot establish a broader effectiveness claim: include enough distinct realistic situations to cover the terminal improvement and every material regression, restraint, fallback, or adjacent-negative boundary implicated by the change. More paraphrases of the same branch are not broader coverage. Minimize redundant proofs within the mechanism, outcome, and regression layers; do not remove a required layer merely because another is cheaper to inspect.
 
 Assign each case one purpose:
 

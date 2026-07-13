@@ -65,7 +65,7 @@ export async function confirmAuthored(options: ConfirmOptions): Promise<Confirma
     runDir,
     versions: ["anchor", "authored"],
     hosts: options.hosts,
-    repetitions: options.repetitions ?? 3,
+    repetitions: options.repetitions ?? 1,
     timeoutMs: options.executorTimeoutMs ?? 1_800_000,
     adapters: options.adapters,
     models: behaviorRuntime.models,
