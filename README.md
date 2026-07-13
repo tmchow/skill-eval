@@ -171,19 +171,31 @@ The engine records facts and hashes. The agent reasons over that ledger, reopens
 
 ```mermaid
 flowchart TD
-    A["Understand the change<br/>and choose a fixed baseline"]
-    B["Confirm the consumer benefit,<br/>regressions, hosts, and call count"]
-    C["Freeze source, suite,<br/>and realistic environments"]
-    D["Independently critique<br/>the measurement design"]
-    E["Run baseline and current<br/>on the smallest sufficient tasks"]
-    F["Check facts, grade outcomes,<br/>and compare anonymous pairs"]
-    G["Confirm on separate validation<br/>when generalization is claimed"]
-    H["Report measurements,<br/>limitations, and improvement advice"]
+    A["Understand the actual change<br/>and choose a fixed baseline"]
+    B["Define the terminal user benefit<br/>and material regression boundaries"]
+    C["Design the smallest sufficient suite<br/>of realistic, discriminating scenarios"]
+    D["Confirm hosts, direct calls,<br/>and the stopping condition"]
+    E["Freeze baseline, current source,<br/>fixtures, and suite"]
+    F["Independently critique whether<br/>the suite can answer the claim"]
+    G["Run paired baseline/current evidence<br/>on the confirmed host scope"]
+    H["Check objective gates and<br/>blindly compare delivered outcomes"]
+    I{"Does the confirmed goal<br/>claim generalization?"}
+    J["Rerun training and separate validation<br/>against the same fixed baseline"]
+    K{"Is the confirmed evidence<br/>decision-sufficient?"}
+    L["Report supported, rejected, or<br/>inconclusive evidence plus advice"]
+    M{"Can a specific additional pass<br/>change the verdict or advice?"}
+    N["Name the unresolved uncertainty,<br/>confirm incremental calls, and run<br/>only the evidence that can resolve it"]
 
-    A --> B --> C --> D --> E --> F --> G --> H
+    A --> B --> C --> D --> E --> F --> G --> H --> I
+    I -->|Yes| J --> K
+    I -->|No| K
+    K -->|Yes| L
+    K -->|No| M
+    M -->|No| L
+    M -->|Yes| N --> H
 ```
 
-The adaptive work stays with the agent: understanding the change, creating realistic scenarios, interpreting disagreement, and diagnosing ownership. The engine owns reproducibility: snapshots, execution, assertions, identities, hashes, status, resume state, and evidence claims.
+The loop is bounded by the confirmed hypothesis, not by a universal run count. Required scenario coverage runs before the first conclusion; later evidence is added only when its possible outcomes could change the decision. The adaptive work stays with the agent: understanding the change, creating realistic scenarios, interpreting disagreement, and diagnosing ownership. The engine owns reproducibility: snapshots, execution, assertions, identities, hashes, status, resume state, and evidence claims. Skill Eval reports and advises; it never edits the target.
 
 ## How It Compares
 
