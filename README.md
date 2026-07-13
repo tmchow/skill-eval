@@ -2,7 +2,7 @@
 
 <img src="docs/assets/skill-eval-calibration-press.jpg" alt="Skill Eval - Blip operating a calibration press to compare skill revisions" width="100%">
 
-### Prove that an agent skill got better.
+### Measure whether an agent skill actually got better.
 
 **Run realistic cross-model evals, diagnose what failed, and get evidence-backed advice without installing or mutating the skill under test.**
 
@@ -25,7 +25,7 @@ Skill Eval turns that uncertainty into a reproducible evaluation:
 
 1. **Understand the actual change.** It reconstructs the intended consumer benefit from source, behavior, and context rather than trusting one PR description.
 2. **Choose the right counterfactual.** Existing skills compare with a selected Git snapshot; new skills must earn their keep against normal no-skill behavior.
-3. **Design the smallest valid eval.** Trigger checks, deterministic contracts, paired quality tasks, and downstream consumers are used only where they answer the hypothesis.
+3. **Design the smallest sufficient eval.** It selects enough distinct, realistic scenarios to cover the intended improvement and material regression boundaries. Trigger checks, deterministic contracts, paired quality tasks, and downstream consumers are used only where they answer the hypothesis.
 4. **Run source without installing it.** Baseline and current snapshots execute in controlled environments, isolated from same-name installed copies.
 5. **Judge independently.** Claude Code and Codex can execute, grade, and blindly compare anonymous outputs while disagreements remain visible.
 6. **Diagnose without moving the goalposts.** A durable evidence index and reasoning checkpoints survive long runs and context compaction.
@@ -96,7 +96,8 @@ final review, not merely an extra peer call.
 
 Coverage: one paired quality task, one restraint scenario, and focused checks
 that the required peer completed. Claude calibrates first; valid evidence then
-runs on Codex. Four direct behavior calls plus blind judges; nested work is unknown.
+runs on Codex. The first pass is four direct behavior calls plus blind judges;
+confirmed second-host coverage adds four Codex behavior calls. Nested work is unknown.
 
 This run will evaluate and advise. It will not edit the skill.
 
@@ -145,6 +146,8 @@ If a cross-model reviewer launches but the final review does not improve, the qu
 
 The suite declares its claim class: **conformance**, **effectiveness**, or **generalization**. An independent critic challenges effectiveness/generalization scenarios before expensive execution. Critics can expose weak fixtures or missing terminal outcomes, but they cannot rewrite the confirmed goal.
 
+Scenario breadth and repetitions answer different questions. The confirmed suite must first include enough distinct cases to cover the terminal improvement and material regression, restraint, fallback, or adjacent-negative boundaries implicated by the change. One favorable scenario cannot establish a broad effectiveness claim. After that sufficient suite runs, Skill Eval adds repetitions or another evidence pass only when the possible outcomes could change the verdict or advice.
+
 ### Cross-model signal without vote inflation
 
 Multiple judges on one execution pair are one sample with stronger or disputed adjudication, not multiple independent wins. Skill Eval reports consequential disagreement, convergence, and host-specific limitations instead of averaging them into a misleading score.
@@ -172,7 +175,7 @@ flowchart TD
     B["Confirm the consumer benefit,<br/>regressions, hosts, and call count"]
     C["Freeze source, suite,<br/>and realistic environments"]
     D["Independently critique<br/>the measurement design"]
-    E["Run baseline and current<br/>on the smallest resolving tasks"]
+    E["Run baseline and current<br/>on the smallest sufficient tasks"]
     F["Check facts, grade outcomes,<br/>and compare anonymous pairs"]
     G["Confirm on separate validation<br/>when generalization is claimed"]
     H["Report measurements,<br/>limitations, and improvement advice"]
@@ -187,6 +190,7 @@ The adaptive work stays with the agent: understanding the change, creating reali
 | Approach | Best for | Boundary |
 |---|---|---|
 | **Skill Eval** | Cross-model repository-source benchmarking, diagnosis, and regression evidence from Claude Code or Codex | Evaluates and advises; another workflow owns edits |
+| **Claude Code `plugin eval`** | Native plugin eval cases with a no-plugin baseline inside Claude Code | Claude-native; Skill Eval adds a portable Claude/Codex entrypoint and cross-runtime evidence model |
 | **Claude Code `skill-creator` evals** | Creating and iterating skills inside Claude Code with Anthropic's native workflow | Host-native and closely coupled to skill authoring |
 | **Deterministic tests** | Parsers, scripts, schemas, and exact side effects | Cannot alone establish open-ended document or decision quality |
 | **Manual prompt testing** | Fast intuition and exploratory checks | Baseline, environment, and judgment standards drift easily |
@@ -202,7 +206,7 @@ Run artifacts live outside the target repository:
 /tmp/skill-eval/<skill-name>/campaigns/<campaign-id>/
 ```
 
-Artifacts include hashes, redacted host events, outputs, outcome/mechanism grades, anonymous judgments, trigger results, benchmarks, factual evidence indexes, reasoning checkpoints, and confirmation claims. Recognized credential formats and secret-bearing environment values are redacted before persistence.
+Artifacts include hashes, host events, outputs, outcome/mechanism grades, anonymous judgments, trigger results, benchmarks, factual evidence indexes, reasoning checkpoints, and confirmation claims. Recognized credential formats and secret-bearing environment values are redacted from host events, stderr, final output, and preserved background output before persistence. Treat arbitrary files produced by the evaluated skill as potentially sensitive.
 
 Generated evals stay out of the distributed target skill. A calibrated suite is persisted only when it has durable reuse value:
 
@@ -245,7 +249,7 @@ Skill Eval invalidates the check, blocks the affected evidence, and requires a r
 
 - **Not a skill author or auto-fixer.** It returns diagnosis and advice; the caller owns revisions and can invoke the evaluator again.
 - **One primary skill per campaign.** Cross-skill behavior can appear in realistic fixtures, but one source skill owns the hypothesis.
-- **Quality evidence uses model time.** Deterministic checks come first; model runs and repetitions are added only when they can change the conclusion.
+- **Quality evidence uses model time.** The initial suite must be broad enough to test the claim; after it runs, model repetitions and additional passes are added only when they can change the conclusion or advice.
 - **No perfect laboratory.** Project context, live services, and nested models may be constitutive and unfrozen; the report narrows claims accordingly.
 - **No universal score.** Benchmarks quantify the suite that ran, not qualities the suite never exercised.
 - **Native Windows is not currently targeted.** Supported environments are macOS, Linux, and WSL.
@@ -262,7 +266,7 @@ Yes. It normally uses the branch/PR merge-base, while the current arm includes a
 
 ### What if the same skill is installed?
 
-Installed presence is irrelevant. Frozen repository snapshots are authoritative, and wrong-source execution fails closed.
+An installed copy does not prevent evaluation. Frozen repository snapshots are authoritative, and any detected reading or invocation of the installed copy invalidates the run.
 
 ### Does it always run end to end?
 
