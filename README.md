@@ -25,7 +25,7 @@ Skill Eval turns that uncertainty into a reproducible evaluation:
 
 1. **Understand the actual change.** It reconstructs the intended consumer benefit from source, behavior, and context rather than trusting one PR description.
 2. **Choose the right counterfactual.** Existing skills compare with a selected Git snapshot; new skills must earn their keep against normal no-skill behavior.
-3. **Design the smallest sufficient eval.** It selects enough distinct, realistic scenarios to cover the intended improvement and material regression boundaries. Trigger checks, deterministic contracts, paired quality tasks, and downstream consumers are used only where they answer the hypothesis.
+3. **Choose the earliest faithful experiment.** It stops at a direct decision when supplied state is enough, simulates only the environment needed to expose changed behavior, and runs downstream only when delivered quality is the claim. The suite still covers the intended improvement and material regression boundaries.
 4. **Run source without installing it.** Baseline and current snapshots execute in controlled environments, isolated from same-name installed copies.
 5. **Judge independently.** Claude Code and Codex can execute, grade, and blindly compare anonymous outputs while disagreements remain visible.
 6. **Diagnose without moving the goalposts.** A durable evidence index and reasoning checkpoints survive long runs and context compaction.
@@ -137,6 +137,16 @@ If a cross-model reviewer launches but the final review does not improve, the qu
 
 ### Evidence matched to the claim
 
+Skill Eval chooses the least constructed experiment that still crosses the changed causal boundary:
+
+| Changed behavior | Experiment boundary |
+|---|---|
+| Interpret state the skill already receives | Give a fresh executor a complete realistic state snapshot and observe its exact next action |
+| Discover state, select a tool, or produce a side effect | Build the minimum repository, fake CLI, service, or file fixture needed to observe it |
+| Improve a document, plan, review, or downstream decision | Run through the stage that delivers that result and compare the consumed outputs |
+
+This is not permission to bypass the treatment. Supplying state directly is invalid when the changed skill must discover, validate, or transform it. Comparative cases give baseline and current versions the same state and task. Narrow conformance checks can run against the current version alone when prior behavior is already established; effectiveness claims still require an honest counterfactual.
+
 | Claim | Evidence |
 |---|---|
 | Triggering is precise | Positive and difficult adjacent-negative discovery trials |
@@ -175,12 +185,12 @@ The engine records facts and hashes. The agent reasons over that ledger, reopens
 flowchart TD
     A["Understand the actual change<br/>and choose a fixed baseline"]
     B["Define the terminal user benefit<br/>and material regression boundaries"]
-    C["Design the smallest sufficient suite<br/>of realistic, discriminating scenarios"]
+    C["Choose the earliest faithful boundary<br/>and sufficient discriminating scenarios"]
     D["Confirm hosts, direct calls,<br/>and the stopping condition"]
     E["Freeze baseline, current source,<br/>fixtures, and suite"]
     F["Independently critique whether<br/>the suite can answer the claim"]
-    G["Run paired baseline/current evidence<br/>on the confirmed host scope"]
-    H["Check objective gates and<br/>blindly compare delivered outcomes"]
+    G["Run current-only contract evidence<br/>or paired outcome evidence"]
+    H["Check objective gates and, when needed,<br/>blindly compare delivered outcomes"]
     I{"Does the confirmed goal<br/>claim generalization?"}
     J["Rerun training and separate validation<br/>against the same fixed baseline"]
     K{"Is the confirmed evidence<br/>decision-sufficient?"}
@@ -283,7 +293,7 @@ An installed copy does not prevent evaluation. Frozen repository snapshots are a
 
 ### Does it always run end to end?
 
-No. It chooses the narrowest boundary that preserves the claimed causal link. Trigger discovery can skip behavior runs; inspectable contracts can skip model calls; quality claims still require real outputs.
+No. It chooses the earliest boundary that preserves the claimed causal link. A decision from already-available state can stop at the next action; tool selection or side effects get a minimal simulated environment; quality claims still run through the delivered output. It never supplies state directly when doing so would bypass the changed mechanism.
 
 ### Will it edit, commit, or push my skill?
 
