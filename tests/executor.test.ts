@@ -223,6 +223,30 @@ describe("matrix execution", () => {
     await expect(runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "interrupted", adapters: { codex: adapter } })).rejects.toThrow("artifact directory already exists");
   });
 
+  test("preserves aggregate evidence from concurrent run processes", async () => {
+    const { runDir, adapter } = await preparedRun();
+    const execute = adapter.execute.bind(adapter);
+    let arrivals = 0;
+    let release = () => {};
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    adapter.execute = async (request) => {
+      arrivals += 1;
+      if (arrivals === 2) release();
+      await barrier;
+      return execute(request);
+    };
+
+    await Promise.all([
+      runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "parallel-one", adapters: { codex: adapter } }),
+      runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "parallel-two", adapters: { codex: adapter } }),
+    ]);
+
+    const executions = await readJson<any[]>(join(runDir, "executions.json"));
+    const gradings = await readJson<any[]>(join(runDir, "gradings.json"));
+    expect(executions.map((item) => item.attempt_id).sort()).toEqual(["parallel-one", "parallel-two"]);
+    expect(gradings.map((item) => item.attempt_id).sort()).toEqual(["parallel-one", "parallel-two"]);
+  });
+
   test("runs training and validation cases as separate evidence partitions", async () => {
     const { runDir, adapter } = await preparedRun();
     const training = await runMatrix({ runDir, versions: ["authored"], hosts: ["codex"], attemptId: "training", partition: "training", adapters: { codex: adapter } });

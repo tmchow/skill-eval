@@ -5,21 +5,26 @@ description: Evaluate and diagnose agent skills without installing them. Use whe
 
 # Skill Eval
 
-Evaluate one primary skill against a fixed development baseline. Produce reproducible evidence, a calibrated conclusion, and concrete improvement advice. Do not edit the target skill, generate challenger versions, select a revision, commit, or promote. The caller or authoring workflow owns changes; after it edits the skill, invoke Skill Eval again against the same campaign goal.
+Test the actual claim made by one skill change. Usually that claim is improved consumer outcomes over a fixed prior or no-skill baseline; when the requested change is genuinely a narrow trigger, route, format, or other contract, test that contract at its nearest faithful boundary.
 
-Skill Eval provides cost-bounded triangulation, not exhaustive certification. Add evidence only when it can materially change the conclusion or advice for the confirmed hypothesis. Decision-sufficient evidence is terminal, but evidence is not decision-sufficient until the confirmed suite's material improvement and regression boundaries have run. Do not keep running merely to maximize confidence.
+- **Result:** an evidence-backed `supported`, `rejected`, or `inconclusive` conclusion with concrete improvement advice.
+- **Next consumer:** the skill author or calling workflow that decides what to change next.
+- **Done:** the confirmed claim and its material regression or restraint boundaries have run, and more evidence would not change the conclusion or advice.
+- **Intent:** scope follows the claim, not the evaluator machinery. Use the smallest realistic evidence set that can resolve the hypothesis across supported runtimes, and stop the target at the earliest boundary that preserves the causal link.
+
+Skill Eval provides cost-bounded triangulation, not exhaustive certification. Decision-sufficient evidence is terminal. Do not run more of the target workflow merely because it is available. Do not edit the target skill, generate challenger versions, select a revision, commit, or promote. The caller or authoring workflow owns changes; after it edits the skill, invoke Skill Eval again against the same campaign goal.
 
 ## Required Decisions
 
-1. Infer the target, development baseline, and intended consumer benefit from the actual change.
+1. Infer the target, development baseline, and actual claim from the change.
 2. Run preflight before model calls.
-3. Select the smallest evidence scope that can test the benefit and material regressions.
+3. Map the claim to its changed mechanism, material boundaries, and earliest faithful observation point.
 4. Summarize the measurement plan in user terms and wait for confirmation.
-5. Prepare immutable baseline/current inputs and independently critique the suite.
+5. Prepare immutable baseline/current inputs and independently critique comparative suites.
 6. Execute, interpret, and report only the selected evidence.
 7. Give evidence-linked advice. Stop without changing the target.
 
-Do not run the full workflow by default. Never weaken the hypothesis after seeing results, reuse an attempt ID, treat mechanism activity as outcome improvement, or let advice become evidence.
+Never weaken the hypothesis after seeing results, reuse an attempt ID, treat mechanism activity as outcome improvement, or let advice become evidence.
 
 Repository source isolation is invariant. Resolve the target first, then inspect and execute only that repository path and frozen snapshots. Ignore same-name skill content already loaded in the invoking session. Never invoke an installed copy of the target skill as either arm.
 
@@ -33,7 +38,7 @@ Before execution, use plain terms such as baseline/current version, test scenari
 
 After each meaningful pass, summarize in at most three compact points: what the evidence changed, important model agreement or disagreement, and what evidence comes next. Do not dump engine machinery.
 
-The final response is an evaluation result, not a workflow recap. Lead with the measured outcome and practical meaning. Use these headings when applicable: **Measured outcome**, **Evidence coverage**, **Cross-model / cross-runtime signal**, **Advice**, and **Not established**. Omit campaign commands, checkpoint IDs, run IDs, and paths unless requested or material. Do not report dollar cost. Report tokens only when requested, budgeted, or themselves under evaluation.
+The final response is an evaluation result, not a workflow recap. Lead with the measured outcome and practical meaning. Use these headings when applicable: **Measured outcome**, **Evidence coverage**, **Cross-model / cross-runtime signal**, **Advice**, and **Not established**. Omit campaign commands, checkpoint IDs, run IDs, and paths unless requested or material. Do not report dollar cost. Report tokens only when requested, budgeted, or themselves under evaluation. State whether another target change is needed; never tell the user to ship, commit, merge, or deploy it.
 
 Reserve "end-to-end" for evidence that reaches the terminal consumer outcome. Do not call the whole skill effective when the primary outcome was blocked, degraded, or outside the suite.
 
@@ -66,6 +71,17 @@ Inspect the complete anchor-to-current diff, current skill, directly affected ca
 
 Read `references/eval-design.md` now.
 
+Before selecting cases, build this claim map internally:
+
+- **Claim:** the delivered benefit or exact behavioral contract under test, and its consumer.
+- **Mechanism:** what changed and how it can cause that result.
+- **Boundaries:** every directly implicated regression, restraint, fallback, or adjacent negative. Treat `only`, `while preserving`, `without`, `except`, and equivalent rationale in the change as candidate boundaries, not commentary.
+- **Observation point:** the earliest faithful point where each claim or boundary becomes decidable.
+
+Every material claim and boundary in this map must appear in the campaign goal and map to a suite expectation. Mechanisms receive supporting expectations when needed, but belong in the goal only when the mechanism itself is the contract. Omit unrelated behavior; do not omit an implicated restraint merely because the positive route is easier to observe.
+
+Choose the experiment boundary before building fixtures. When the changed behavior is a decision from state already available to the skill, give a fresh executor that complete state and observe its exact next action; do not construct or run unrelated environment. Simulate state acquisition or side effects only when they are part of the claim, and run through the delivered output only when that downstream result is the claim. Supplying state directly is invalid when it bypasses the changed mechanism.
+
 Trace each changed mechanism through immediate effects to the terminal consumer benefit. Complete internally:
 
 > The change exists so `<consumer>` gets `<terminal benefit>`; the improvement case fails when `<benefit is absent even though the mechanism works>`.
@@ -89,33 +105,43 @@ A new skill must earn its keep against normal no-skill behavior for effectivenes
 
 ### Scope And Host Coverage
 
-Use the narrowest execution boundary that preserves the causal link. Trigger-only questions need realistic positive and adjacent-negative trigger probes, not full skill runs. Inspectable contracts may use deterministic checks. Output-quality claims require paired outputs and blind judgment. Broad consumer claims need realistic downstream tasks. Do not stub the component claimed to create the benefit.
+Use the observation points from the claim map independently. A restraint must not widen the execution boundary of the positive claim; test each through the earliest point that makes it decidable. Routing conformance has a two-case coverage floor: one realistic positive and one nearest-negative exclusion. Frozen source may establish prior baseline behavior, but it does not replace a current-runtime restraint case.
 
-Assume skills target both Claude Code and Codex. When both hosts are ready, recommend both and calibrate on the invoking host first. After valid calibration, automatically run the same frozen evidence on the second host within the confirmed scope. A one-host sanity check is acceptable only when explicitly requested, genuinely host-specific, fully deterministic, or forced by unavailable coverage or a hard user budget; state that it does not establish cross-host behavior.
+Read `references/evidence-preparation.md` before creating a routing campaign and pass its boundary-stop gate. A tool-call expectation observes dispatch but does not stop the called component or later workflow. Full execution is valid only when the changed mechanism's downstream effect is itself part of the claim or a concrete feasibility check shows that earlier interception would invalidate it. Inspectable contracts use deterministic checks. Output-quality claims require paired outputs and blind judgment. Broad consumer claims need realistic downstream tasks. Do not stub the component claimed to create the benefit.
+
+Assume skills target both Claude Code and Codex. When both hosts are ready, recommend both. Run mechanically prevalidated, independent, low-risk host coverage in parallel when one host cannot change the other's suite; otherwise calibrate on the invoking host first, then automatically run the same frozen evidence on the second host. A one-host sanity check is acceptable only when explicitly requested, genuinely host-specific, fully deterministic, or forced by unavailable coverage or a hard user budget; state that it does not establish cross-host behavior.
+
+For conformance, default to the current version only. Add an anchor execution only when prior runtime behavior is uncertain and observing it could change the contract conclusion. Scope changed-only mechanism expectations to `candidate` and any baseline-only mechanism expectations to `anchor`; expected baseline behavior must not appear as a target failure.
 
 Design the smallest **sufficient** suite before execution. A broad effectiveness claim normally needs distinct realistic improvement situations plus the material regression, restraint, fallback, or adjacent-negative boundaries implicated by the change. One favorable case cannot establish that breadth; one case is enough only for a genuinely narrow deterministic contract. Do not confuse scenario breadth with repetition count.
 
 Start with one repetition per case when it can calibrate feasibility and variance. Before adding evidence beyond the confirmed suite, name the unresolved uncertainty and how each plausible result would change the verdict or advice. If neither result would change the decision, stop. Add repetitions only when observed variance, disagreement, or host differences could reverse the conclusion. Model-call and elapsed-time ceilings are runaway safety pauses, not evidence thresholds.
 
-The suite hypothesis states the terminal improvement plus material regression and restraint boundaries. It must not contain repetition counts, judge counts, or budgets unless the user made them part of the requested behavior.
+The suite hypothesis states the terminal improvement plus material regression and restraint boundaries. It contains behavior only: do not add host names, version labels, run counts, judge allocation, budgets, or words such as `verified` that imply evidence already exists. Before creating the campaign, map every material outcome, regression, and restraint clause to at least one suite expectation. Do not name a boundary in the goal or proposal and leave it unmeasured.
 
-Create the campaign before asking for confirmation:
+If one measurement goal clearly follows from the request and runtime dataflow, infer it. If two or more materially different goals remain plausible, use the harness's native blocking question to offer at most three concise choices before creating a campaign. Recommend the terminal effectiveness question when the changed mechanism exists to improve a consumed output; offer mechanism-only conformance as a narrower alternative, not an equivalent substitute. State what each choice establishes, what it leaves untested, and its relative execution or external-call burden. Include a stop option only when existing evidence may already answer the user's need. Do not ask the user to choose fixtures, graders, repetition counts, or other methodology the evaluator can determine.
+
+Create the campaign before asking for confirmation. Campaign goals are immutable; if the user later changes the claimed outcome or a material boundary, create a new campaign instead of carrying the old boundary as an untested limitation.
 
 ```bash
 SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" campaign-init --target "<target-skill>" --goal "<exact behavioral contract>"
 ```
 
-Draft the suite in OS temp and get exact direct-call counts with `estimate`. Do not invent token or wall-clock estimates; nested target work remains unknown until calibration.
+Draft the suite in OS temp and get exact direct-call counts with `estimate`. Use workflow `run` for conformance, normally with only `authored`; use `compare` with `anchor,authored` for effectiveness or generalization. Pass judge hosts for any qualitative expectations. Do not invent token or wall-clock estimates; nested target work remains unknown until calibration.
 
 ```bash
 SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" estimate --suite "<draft-suite-json>" --workflow "<run|compare>" --versions "<anchor,authored-or-authored>" --hosts "<calibration-hosts>" [--judge-hosts "<judge-hosts>"] [--critic-hosts "<critic-hosts>"] --repetitions 1 --partition training
 ```
 
-In under 180 words, present: the exact measurement goal, how scenarios test improvement, regression/trigger coverage, recommended hosts and calibration sequence, direct call count, stopping condition, and what remains unknown. State plainly that this run evaluates and advises but will not edit. Wait for confirmation.
+Do not ask for confirmation until `estimate` succeeds and the proposal states its exact direct-call count. Nested calls made by the target remain a separate unknown.
+
+In under 180 words, present: the exact measurement goal, how scenarios test improvement, regression/trigger coverage, the execution boundary and whether downstream work is intercepted or runs, recommended hosts and calibration sequence, direct call count, stopping condition, and what remains unknown. Never predict an outcome from home-directory, network, installed-tool, or other external state the fixture does not control. State plainly that this run evaluates and advises but will not edit. Wait for confirmation.
 
 ## 3. Prepare And Critique Evidence
 
-After confirmation, read `references/schemas.md`, then `references/evidence-preparation.md`. Copy the confirmed campaign `measurement_goal` exactly into the suite `hypothesis`. Use `evidence_role` on every expectation. Generalization requires outcome evidence in both training and caller-visible validation partitions.
+After confirmation, read `references/schemas.md`, then read `references/evidence-preparation.md` if it was not already loaded for routing. Copy the confirmed campaign `measurement_goal` exactly into the suite `hypothesis`. Use `evidence_role` on every expectation. Generalization requires outcome evidence in both training and caller-visible validation partitions.
+
+Before any replacement run, decide whether the adjustment repairs measurement or changes the claim. Reuse the campaign only for fixture, check, or observability repairs that preserve the exact outcome and material boundaries. A user correction that narrows or broadens those boundaries supersedes the campaign: create a new one and reconfirm unless the user explicitly confirmed the exact revised scope.
 
 Keep prior campaign case and trigger IDs unless hash-bound invalidation evidence justifies retirement. Do not remove a failing case because it makes the result worse. Validation cases may be visible to the caller and evaluator, but must remain distinct from calibration evidence; never describe them as secret or untouched.
 
@@ -141,13 +167,13 @@ SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/ski
 
 ## 4. Execute The Smallest Resolving Test
 
-For a paired training calibration:
+For effectiveness or generalization paired training calibration:
 
 ```bash
 SKILL_DIR="<absolute path of this skill directory>"; bun "$SKILL_DIR/scripts/skill-eval.ts" compare --run-dir "<run-dir>" --left anchor --right authored --label calibration --hosts "<calibration-host>" --judge-hosts "<ready-evaluator-hosts>" --repetitions 1 [--executor-timeout-ms "<validated-ceiling>"]
 ```
 
-Use `trigger --partition training|validation|all` for discovery-only evaluation. Use `check-script`, `run`, and `grade` for deterministic conformance. Use `grade-model` only for single-output qualitative expectations and `judge` for paired comparison expectations. Never use a judge to bypass missing, timed-out, malformed, source-mutating, or wrong-source executions.
+For conformance, estimate with workflow `run`, execute with `run`, and use `grade`; `compare` rejects conformance. Prefer authored-only, version-scoped deterministic checks. Use `trigger --partition training|validation|all` for discovery-only evaluation, `grade-model` only for unavoidable single-output qualitative expectations, and `judge` for paired comparison expectations. Never use a judge to bypass missing, timed-out, malformed, source-mutating, or wrong-source executions.
 
 Cross-model calls default to `claude-opus-4-8` at high effort and `gpt-5.6-sol` at high reasoning. These are evaluator-ceiling defaults, not proof of weaker-runtime portability. Role-specific behavior and evaluator overrides may be supplied when the user asks to test a floor runtime. Do not invent model IDs. These settings do not override nested models chosen by the target skill.
 
@@ -161,7 +187,7 @@ A timeout is inconclusive, not a regression. Raise a ceiling only from a known n
 
 If a deterministic check is semantically wrong after raw inspection, run `invalidate-check`. The result becomes blocked, not passed. Replace the check for every arm in a new prepared run. Campaign case retirement additionally requires this hash-bound invalidation evidence.
 
-After valid invoking-host calibration, complete already-confirmed second-host coverage. Add repetitions only if uncertainty could change the verdict. Stop when the hypothesis is supported, rejected, or genuinely inconclusive at the confirmed scope. An unfavorable target result is evidence, not a reason to redesign the suite or add rounds until the hypothesis passes. Ask before any material expansion beyond the confirmed plan, giving the unresolved question and incremental direct-call count.
+After valid invoking-host calibration, complete already-confirmed second-host coverage. If the prevalidated host runs were independent and launched together, adjudicate them together. Add repetitions only if uncertainty could change the verdict. Stop when the hypothesis is supported, rejected, or genuinely inconclusive at the confirmed scope. An unfavorable target result is evidence, not a reason to redesign the suite or add rounds until the hypothesis passes. Ask before any material expansion beyond the confirmed plan, giving the unresolved question and incremental direct-call count.
 
 ## 5. Confirm And Build The Evidence Record
 
@@ -195,8 +221,10 @@ Reconcile completed versus failed/timed-out executions, valid versus invalid qua
 
 Quantify only artifact-supported measurements relevant to the hypothesis: outcome pass rates, critical mechanism gates, blind pair preferences, standard deviation/stability, trigger precision/recall/false-trigger rate, duration, errors, and skill-byte delta. Multiple judges on one execution pair are one independent outcome, not extra samples.
 
+Do not infer that work was cheap, fast, safe, or ready to ship from successful completion or a skipped escalation. Such claims require direct supporting measurements within the confirmed scope. Describe fixture isolation and unfrozen external state separately.
+
 State cross-model value only when it changed the conclusion: material agreement, disputed cases, or disagreement that became convergence. If model, harness, effort, tools, or context changed together, call it a cross-runtime signal rather than attributing causality to the model alone. Coverage by two hosts is not itself cross-model value.
 
-Advice must map each material failure or uncertainty to observed evidence, the likely owning skill layer, and the smallest change class that could address it. Advice may recommend a focused prose edit, fixture-independent contract change, reference restructuring, script change, or broader skill restructure. Do not prescribe more prose by default. Clearly distinguish demonstrated defects, plausible diagnoses, and optional authoring best practices.
+Advice must map each material failure or uncertainty to observed evidence, the likely owning skill layer, and the smallest change class that could address it. Advice may recommend a focused prose edit, fixture-independent contract change, reference restructuring, script change, or broader skill restructure. Do not prescribe more prose by default. Clearly distinguish demonstrated defects, plausible diagnoses, and optional authoring best practices. Include only limitations that bound the confirmed claim; do not carry superseded or unrelated capabilities into **Not established**. State whether the target needs another change, but do not recommend committing, shipping, or merging it.
 
 Do not apply the advice. Return control to the caller. A caller that edits the skill should rerun Skill Eval with the same confirmed campaign goal and fixed anchor so the new evidence tests whether the proposed improvement actually worked without erasing prior regressions.

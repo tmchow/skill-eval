@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { delimiter, join, resolve } from "node:path";
 import { mapLimit } from "./async.ts";
 import { gradeExecution } from "./assertions.ts";
-import { containedPath, copyTree, hashTree, readJson, reserveArtifactDir, writeJson } from "./json.ts";
+import { containedPath, copyTree, hashTree, mergeJsonArray, readJson, reserveArtifactDir, writeJson } from "./json.ts";
 import { createHostAdapters, effectiveRuntimeProfile, resolvedRuntimeIdentity } from "./hosts.ts";
 import { assertSuiteApproved } from "./suite-critic.ts";
 import { loadRun, loadSuite, verifyRunIntegrity } from "./workspace.ts";
@@ -69,6 +69,14 @@ function executorPrompt(skillPath: string | null, task: string, outputDir: strin
 
 function recordKey(record: Pick<ExecutionRecord, "host" | "eval_id" | "version" | "repetition">): string {
   return `${record.host}\0${record.eval_id}\0${record.version}\0${record.repetition}`;
+}
+
+function aggregateRecordKey(record: Pick<ExecutionRecord, "attempt_id" | "host" | "eval_id" | "version" | "repetition">): string {
+  return `${record.attempt_id}\0${recordKey(record)}`;
+}
+
+function aggregateGradeKey(grade: Pick<GradingResult, "attempt_id" | "host" | "eval_id" | "version" | "repetition">): string {
+  return `${grade.attempt_id ?? ""}\0${recordKey(grade)}`;
 }
 
 function taskKey(task: MatrixTask): string {
@@ -186,16 +194,14 @@ export async function runMatrix(options: RunMatrixOptions): Promise<ExecutionRec
       attemptRecords.set(recordKey(record), record);
       const key = recordKey(record);
       if (!previous.some((item) => item.attempt_id === id && recordKey(item) === key)) {
-        previous.push(record);
-        await writeJson(join(runDir, "executions.json"), previous);
+        previous = await mergeJsonArray(join(runDir, "executions.json"), [record], aggregateRecordKey);
       }
       if (!grades.some((item) => item.attempt_id === id && recordKey(item) === key)) {
         const evalCase = suite.evals.find((item) => item.id === record.eval_id);
         if (!evalCase) throw new Error(`execution references missing eval: ${record.eval_id}`);
         const grade = await gradeExecution(record, evalCase);
         await writeJson(join(record.run_dir, "grading.json"), grade);
-        grades.push(grade);
-        await writeJson(join(runDir, "gradings.json"), grades);
+        grades = await mergeJsonArray(join(runDir, "gradings.json"), [grade], aggregateGradeKey);
       }
       if (resumedManifest?.status !== "complete") {
         await writeJson(manifestPath, { ...manifest, record_count: attemptRecords.size });

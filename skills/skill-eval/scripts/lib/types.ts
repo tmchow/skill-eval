@@ -40,6 +40,7 @@ export type DeterministicCheck =
   | { type: "tool_not_called"; value: string; regex?: boolean }
   | { type: "tool_call_count"; value: string; count: number; regex?: boolean }
   | { type: "tool_result_contains"; tool: string; value: string; regex?: boolean }
+  | { type: "interactive_prompt_not_used" }
   | { type: "exit_success" };
 
 export interface Expectation {

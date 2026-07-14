@@ -68,7 +68,7 @@ Start a new Codex thread after installation.
 - Git
 - An authenticated Claude Code or Codex CLI
 
-One authenticated host can run a limited eval. When both are ready, Skill Eval calibrates on the invoking host and normally repeats the same frozen evidence on the other host.
+One authenticated host can run a limited eval. When both are ready, mechanically prevalidated host checks can run together; uncertain or qualitative evidence calibrates on the invoking host before the same frozen evidence runs on the other host.
 
 ## Your First Eval
 
@@ -87,6 +87,8 @@ $skill-eval Test whether the skill changes on this branch are beneficial.
 ```
 
 Before spending model calls, Skill Eval gives you a short proposal:
+
+If the request could reasonably mean either "does this improve the result?" or "is the new wiring correct?", Skill Eval first offers those as distinct choices, recommends the one matching the change's intended benefit, and states what the narrower option would leave untested. It does not make you choose internal fixture or grading details.
 
 ```text
 What I am evaluating: the branch version against its merge-base with main.

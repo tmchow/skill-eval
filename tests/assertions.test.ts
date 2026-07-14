@@ -99,6 +99,35 @@ describe("deterministic grading", () => {
     expect(result.expectations[0]?.evidence).toContain("tool calls");
   });
 
+  test("detects interactive question tools across host event shapes", async () => {
+    const record = await execution();
+    await writeFile(record.host_result.event_path, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "question-1", name: "AskUserQuestion", input: { question: "Continue?" } }] } }),
+      JSON.stringify({ type: "item.completed", item: { type: "function_call", name: "request_user_input", arguments: { question: "Continue?" } } }),
+    ].join("\n"));
+    const result = await gradeExecution(record, {
+      ...evalCase,
+      expectations: [
+        { id: "noninteractive", text: "no interactive question was attempted", severity: "critical", evidence_role: "outcome", check: { type: "interactive_prompt_not_used" } },
+      ],
+    });
+
+    expect(result.expectations[0]?.passed).toBe(false);
+    expect(result.expectations[0]?.evidence).toContain("2 interactive prompt tool calls");
+  });
+
+  test("passes the non-interactive check when no question tool was used", async () => {
+    const result = await gradeExecution(await execution(), {
+      ...evalCase,
+      expectations: [
+        { id: "noninteractive", text: "no interactive question was attempted", severity: "critical", evidence_role: "outcome", check: { type: "interactive_prompt_not_used" } },
+      ],
+    });
+
+    expect(result.expectations[0]?.passed).toBe(true);
+    expect(result.expectations[0]?.evidence).toContain("0 interactive prompt tool calls");
+  });
+
   test("command-specific regexes distinguish execution from reading the same script", async () => {
     const record = await execution();
     const invocation = 'cross-model-doc-review\\.sh"? "?(codex|claude)';

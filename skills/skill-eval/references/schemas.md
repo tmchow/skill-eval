@@ -105,9 +105,10 @@ Fixture paths are relative to the suite file and cannot escape it. `environment.
 - `{"type":"tool_not_called","value":"dangerous-command","regex":false}`
 - `{"type":"tool_call_count","value":"adversarial-reviewer","count":1}`
 - `{"type":"tool_result_contains","tool":"cross-model-review.sh","value":"complete"}`
+- `{"type":"interactive_prompt_not_used"}`
 - `{"type":"exit_success"}`
 
-Paths default to `outputs/`; use `root: "workspace"` for fixture-repository files. Tool checks inspect structured host events, not prompt text. `tool_result_contains` proves usable completion, while `tool_called` proves launch only. For comparative claims, mark a tool check as `outcome` only when the action itself is terminal and declare `outcome_basis: "terminal-action"`; otherwise mark it `mechanism`. Final-output substring checks prove literal wording, not semantic intent.
+Paths default to `outputs/`; use `root: "workspace"` for fixture-repository files. Tool checks inspect structured host events, not prompt text. `tool_result_contains` proves usable completion, while `tool_called` proves launch only. `interactive_prompt_not_used` rejects Claude Code or Codex interactive-question tool calls; successful exit alone does not prove a non-interactive contract. For comparative claims, mark a tool check as `outcome` only when the action itself is terminal and declare `outcome_basis: "terminal-action"`; otherwise mark it `mechanism`. Final-output substring checks prove literal wording, not semantic intent.
 
 ## Critique Adjudication
 

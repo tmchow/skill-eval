@@ -29,13 +29,17 @@ export async function estimateCalls(options: CallEstimateOptions): Promise<Recor
   const judgeHosts = [...new Set(options.judgeHosts ?? [])];
   const criticHosts = [...new Set(options.criticHosts ?? [])];
   if (hosts.length === 0 || versions.length === 0) throw new Error("call estimate requires hosts and versions");
+  if (suite.claim_class === "conformance" && options.workflow === "compare") {
+    throw new Error("conformance evidence validates a contract; estimate it with workflow run, not compare");
+  }
   if (options.workflow === "compare" && (versions.length !== 2 || judgeHosts.length === 0)) throw new Error("compare estimate requires exactly two versions and at least one judge host");
   const critics = suite.claim_class === "conformance" ? 0 : criticHosts.length;
   const behavior = cases.length * versions.length * hosts.length * repetitions;
   const executionQualitativeCells = cases.reduce((total, item) => total + versions.filter((version) => hasExecutionQualitative(item, version)).length, 0);
   const executionQualitativeCases = cases.filter((item) => versions.some((version) => hasExecutionQualitative(item, version))).length;
+  if (executionQualitativeCells > 0 && judgeHosts.length === 0) throw new Error(`${options.workflow} estimate with qualitative expectations requires at least one judge host`);
   const comparisonQualitativeCases = options.workflow === "compare" ? cases.filter((item) => hasBlindJudgeCriteria(item, versions[0]!, versions[1]!)).length : 0;
-  const qualitativeGraders = options.workflow === "compare" ? executionQualitativeCells * hosts.length * repetitions * judgeHosts.length : 0;
+  const qualitativeGraders = executionQualitativeCells * hosts.length * repetitions * judgeHosts.length;
   const blindJudges = options.workflow === "compare" ? comparisonQualitativeCases * hosts.length * repetitions * judgeHosts.length : 0;
   return {
     workflow: options.workflow, partition, cases: cases.length, qualitative_cases: comparisonQualitativeCases, execution_qualitative_cases: executionQualitativeCases, repetitions,

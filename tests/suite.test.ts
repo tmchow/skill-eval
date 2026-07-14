@@ -36,6 +36,14 @@ describe("eval suite validation", () => {
     expect(suite.evals[0]?.expectations[0]?.check?.type).toBe("final_not_contains");
   });
 
+  test("accepts the cross-host non-interactive contract check", () => {
+    const value = structuredClone(validSuite) as any;
+    value.evals[0].expectations = [
+      { id: "noninteractive", text: "does not ask a blocking question", severity: "critical", evidence_role: "outcome", check: { type: "interactive_prompt_not_used" } },
+    ];
+    expect(validateSuite(value).evals[0]!.expectations[0]!.check!.type).toBe("interactive_prompt_not_used");
+  });
+
   test("requires an explicit claim class", () => {
     const value = structuredClone(validSuite) as any;
     delete value.claim_class;

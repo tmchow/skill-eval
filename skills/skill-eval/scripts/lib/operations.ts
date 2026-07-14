@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import { readJson, writeJson } from "./json.ts";
 import type { HostAdapter, HostName, HostResult } from "./types.ts";
 
-export type OperationKind = "suite-critique" | "trigger";
+export type OperationKind = "model-grading" | "suite-critique" | "trigger";
 export type OperationState = "active" | "complete" | "attention" | "stopped";
 
 export interface OperationLimits {

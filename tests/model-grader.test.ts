@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runModelGraders } from "../skills/skill-eval/scripts/lib/model-grader.ts";
 import { readJson, writeJson } from "../skills/skill-eval/scripts/lib/json.ts";
+import { readRunStatus } from "../skills/skill-eval/scripts/lib/status.ts";
 import type { HostAdapter, HostRequest, HostResult } from "../skills/skill-eval/scripts/lib/types.ts";
 
 class GraderAdapter implements HostAdapter {
@@ -51,6 +52,22 @@ test("grades qualitative expectations from anonymous transcript and artifacts", 
   expect(adapter.prompts[0]).not.toContain("authored");
   expect(await readFile(join(results[0]!.run_dir, "input", "events.jsonl"), "utf8")).not.toContain("authored");
   expect(results[0]?.claims[0]?.verified).toBe(true);
+  expect((await readRunStatus(runDir)).operations).toMatchObject([{
+    kind: "model-grading", status: "complete", phase: "grading-executions", completed_units: 1, planned_units: 1, stop_reason: "graded",
+  }]);
+});
+
+test("exposes active model grading through status", async () => {
+  const { runDir, adapter } = await fixture();
+  adapter.delayMs = 50;
+
+  const grading = runModelGraders({ runDir, executionAttemptIds: ["attempt"], gradingId: "status", graderHosts: ["codex"], adapters: { codex: adapter } });
+  await Bun.sleep(10);
+
+  expect((await readRunStatus(runDir)).operations).toMatchObject([{
+    kind: "model-grading", status: "active", phase: "grading-executions", planned_units: 1,
+  }]);
+  await grading;
 });
 
 test("fails closed on malformed grader evidence", async () => {

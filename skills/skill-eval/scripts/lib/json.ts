@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export async function readJson<T>(path: string): Promise<T> {
@@ -50,6 +50,64 @@ export async function writeJson(path: string, value: unknown): Promise<void> {
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
   await rename(temporary, path);
+}
+
+async function withFileLock<T>(path: string, operation: () => Promise<T>): Promise<T> {
+  const lockPath = `${path}.lock`;
+  const deadline = Date.now() + 60_000;
+  await mkdir(dirname(path), { recursive: true });
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const lockStat = await stat(lockPath).catch(() => null);
+      if (lockStat && Date.now() - lockStat.mtimeMs > 30_000) {
+        await rm(lockPath, { recursive: true, force: true });
+        continue;
+      }
+      if (Date.now() >= deadline) throw new Error(`timed out waiting for state lock: ${path}`);
+      await Bun.sleep(10);
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
+}
+
+async function updateJsonArray<T>(path: string, values: T[], key: (value: T) => string, replace: boolean): Promise<T[]> {
+  return withFileLock(path, async () => {
+    const current = await readOptionalJson<T[]>(path, []);
+    const indexes = new Map(current.map((value, index) => [key(value), index]));
+    let changed = false;
+    for (const value of values) {
+      const identity = key(value);
+      const index = indexes.get(identity);
+      if (index === undefined) {
+        indexes.set(identity, current.length);
+        current.push(value);
+        changed = true;
+        continue;
+      }
+      if (JSON.stringify(current[index]) === JSON.stringify(value)) continue;
+      if (!replace) throw new Error(`conflicting immutable state record: ${identity}`);
+      current[index] = value;
+      changed = true;
+    }
+    if (changed) await writeJson(path, current);
+    return current;
+  });
+}
+
+export async function mergeJsonArray<T>(path: string, values: T[], key: (value: T) => string): Promise<T[]> {
+  return updateJsonArray(path, values, key, false);
+}
+
+export async function upsertJsonArray<T>(path: string, values: T[], key: (value: T) => string): Promise<T[]> {
+  return updateJsonArray(path, values, key, true);
 }
 
 export async function reserveArtifactDir(path: string): Promise<void> {

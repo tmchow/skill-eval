@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { mapLimit } from "./async.ts";
 import { createHostAdapters } from "./hosts.ts";
 import { copyTree, parseJsonObject, readJson, reserveArtifactDir, writeJson } from "./json.ts";
+import { createOperation, instrumentAdapters } from "./operations.ts";
 import { executionCanBeGraded, executionFailure } from "./validity.ts";
 import { expectationAppliesTo } from "./expectations.ts";
 import { loadSuite, verifyRunIntegrity } from "./workspace.ts";
@@ -78,7 +79,7 @@ export async function runModelGraders(options: ModelGraderOptions): Promise<Mode
   const gradingRoot = join(runDir, "artifacts", "model-graders", options.gradingId);
   await reserveArtifactDir(gradingRoot);
   await writeJson(join(gradingRoot, "grading-attempt.json"), { schema_version: 2, grading_id: options.gradingId, status: "started", created_at: new Date().toISOString(), execution_attempt_ids: options.executionAttemptIds, grader_hosts: options.graderHosts, skipped_executions: skipped });
-  const adapters = { ...createHostAdapters(), ...options.adapters };
+  const baseAdapters = { ...createHostAdapters(), ...options.adapters };
   const graderInstructions = await readFile(resolve(import.meta.dir, "../../references/agents/grader.md"), "utf8");
   const tasks: Array<{ execution: ExecutionRecord; evalCase: EvalCase; qualitative: Expectation[]; graderHost: HostName }> = [];
   for (const execution of executions) {
@@ -87,6 +88,8 @@ export async function runModelGraders(options: ModelGraderOptions): Promise<Mode
     const qualitative = evalCase.expectations.filter((item) => !item.check && item.scope !== "comparison" && expectationAppliesTo(item, execution.version));
     for (const graderHost of options.graderHosts) if (qualitative.length > 0) tasks.push({ execution, evalCase, qualitative, graderHost });
   }
+  const operation = await createOperation(runDir, { kind: "model-grading", phase: "grading-executions", planned_units: tasks.length });
+  const adapters = instrumentAdapters(baseAdapters, operation);
   const scratchRoot = await mkdtemp(join(tmpdir(), "skill-eval-grader-"));
   let results: ModelGradingResult[] = [];
   try {
@@ -115,7 +118,9 @@ export async function runModelGraders(options: ModelGraderOptions): Promise<Mode
         const expectationText = qualitative.map((item) => `- ${item.id}: ${item.text}`).join("\n");
         const prompt = `${graderInstructions.trim()}\n\nGrade one anonymous execution for the task below.\n\nTask: ${evalCase.prompt}\nExpectations:\n${expectationText}\nArtifacts: ${outputPath}\nEvent transcript: ${transcriptPath}\n\nReturn only JSON: expectations [{id,status:PASS|FAIL|BLOCKED,evidence}], claims [{claim,type:factual|process|quality,verified,evidence}], eval_feedback [{expectation_id:string|null,issue}].`;
         const eventPath = join(graderDir, "events.jsonl"); const stderrPath = join(graderDir, "stderr.txt"); const finalPath = join(graderDir, "final.json");
-        const hostResult = await adapters[graderHost].execute({ cwd: graderDir, prompt, eventPath, stderrPath, finalPath, outputSchemaPath: schemaPath, timeoutMs: options.timeoutMs ?? 300_000, model: options.models?.[graderHost], reasoningEffort: options.reasoningEfforts?.[graderHost], role: "grader", capabilities: ["artifact-read"] });
+        const adapter = adapters[graderHost];
+        if (!adapter) throw new Error(`grader host adapter unavailable: ${graderHost}`);
+        const hostResult = await adapter.execute({ cwd: graderDir, prompt, eventPath, stderrPath, finalPath, outputSchemaPath: schemaPath, timeoutMs: options.timeoutMs ?? 300_000, model: options.models?.[graderHost], reasoningEffort: options.reasoningEfforts?.[graderHost], role: "grader", capabilities: ["artifact-read"] });
         const parsed = parse(hostResult.final_text);
         const byId = new Map(qualitative.map((item) => [item.id, item]));
         const expectations = (parsed?.expectations ?? []).filter((item) => byId.has(item.id)).map((item) => ({
@@ -135,10 +140,12 @@ export async function runModelGraders(options: ModelGraderOptions): Promise<Mode
         await writeJson(join(archiveDir, "grading.json"), grading);
         return grading;
     });
-  } finally {
-    await rm(scratchRoot, { recursive: true, force: true });
-  }
-  await writeJson(join(runDir, "model-gradings.json"), [...previous, ...results]);
-  await writeJson(join(gradingRoot, "grading-attempt.json"), { schema_version: 2, grading_id: options.gradingId, status: "complete", completed_at: new Date().toISOString(), execution_attempt_ids: options.executionAttemptIds, grader_hosts: options.graderHosts, record_count: results.length, skipped_executions: skipped });
-  return results;
+    await writeJson(join(runDir, "model-gradings.json"), [...previous, ...results]);
+    await writeJson(join(gradingRoot, "grading-attempt.json"), { schema_version: 2, grading_id: options.gradingId, status: "complete", completed_at: new Date().toISOString(), execution_attempt_ids: options.executionAttemptIds, grader_hosts: options.graderHosts, record_count: results.length, skipped_executions: skipped });
+    await operation.complete("graded");
+    return results;
+  } catch (error) {
+    await operation.fail(error);
+    throw error;
+  } finally { await rm(scratchRoot, { recursive: true, force: true }); }
 }

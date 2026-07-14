@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { containedPath, readJson, writeJson } from "./json.ts";
+import { containedPath, readJson, upsertJsonArray, writeJson } from "./json.ts";
 import { expectationAppliesTo } from "./expectations.ts";
 import { loadSuite, verifyRunIntegrity } from "./workspace.ts";
 import type { DeterministicCheck, EvalCase, ExecutionRecord, GradedExpectation, GradingResult } from "./types.ts";
@@ -65,6 +65,12 @@ async function recordedToolCalls(eventPath: string): Promise<string[]> {
   return calls;
 }
 
+function isInteractivePromptCall(invocation: string): boolean {
+  return /^(?:AskUserQuestion|Question|request_user_input)(?:\s|$)/.test(invocation)
+    || /^function_call request_user_input(?:\s|$)/.test(invocation)
+    || /^mcp_tool_call \S+ request_user_input(?:\s|$)/.test(invocation);
+}
+
 function resultText(value: unknown): string {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) return value.map(resultText).join("\n");
@@ -122,6 +128,12 @@ async function inspect(record: ExecutionRecord, check: DeterministicCheck): Prom
     const count = calls.filter((call) => matches(call, check.value, check.regex)).length;
     const passed = check.type === "tool_called" ? count > 0 : check.type === "tool_not_called" ? count === 0 : count === check.count;
     return { passed, evidence: `${count} of ${calls.length} recorded tool calls matched ${JSON.stringify(check.value)}` };
+  }
+  if (check.type === "interactive_prompt_not_used") {
+    if (record.host_result.malformed_events > 0) throw new Error(`tool-call trace contains ${record.host_result.malformed_events} malformed events`);
+    const calls = await recordedToolCalls(record.host_result.event_path);
+    const count = calls.filter(isInteractivePromptCall).length;
+    return { passed: count === 0, evidence: `${count} interactive prompt tool calls were recorded` };
   }
   if (check.type === "tool_result_contains") {
     if (record.host_result.malformed_events > 0) throw new Error(`tool-result trace contains ${record.host_result.malformed_events} malformed events`);
@@ -219,6 +231,10 @@ export async function gradeMatrix(runDir: string): Promise<GradingResult[]> {
     await writeJson(join(record.run_dir, "grading.json"), grade);
     grades.push(grade);
   }
-  await writeJson(join(runDir, "gradings.json"), grades);
+  await upsertJsonArray(
+    join(runDir, "gradings.json"),
+    grades,
+    (grade) => `${grade.attempt_id}\0${grade.host}\0${grade.eval_id}\0${grade.version}\0${grade.repetition}`,
+  );
   return grades;
 }

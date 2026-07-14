@@ -6,7 +6,8 @@ const severities = new Set<Severity>(["critical", "quality", "diagnostic"]);
 const checkTypes = new Set([
   "file_exists", "file_not_exists", "file_contains", "file_not_contains",
   "json_pointer_equals", "final_contains", "final_not_contains",
-  "tool_called", "tool_not_called", "tool_call_count", "tool_result_contains", "exit_success",
+  "tool_called", "tool_not_called", "tool_call_count", "tool_result_contains",
+  "interactive_prompt_not_used", "exit_success",
 ]);
 const claimClasses = new Set<ClaimClass>(["conformance", "effectiveness", "generalization"]);
 const expectationScopes = new Set<ExpectationScope>(["execution", "comparison"]);

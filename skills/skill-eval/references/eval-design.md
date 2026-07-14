@@ -28,7 +28,11 @@ Classify the conclusion before writing cases:
 
 Most planning, writing, review, synthesis, and decision-making changes are effectiveness claims even when their implementation is a gate or orchestration step. Use conformance only when the user's question is genuinely limited to the contract.
 
+Conformance establishes whether the current skill obeys that contract. Default to the authored/current version; source and frozen-diff evidence may establish the old rule without spending a baseline model call. Execute the anchor only when its runtime behavior is itself uncertain and could change the conclusion. Scope changed-only mechanism expectations to `candidate` and baseline-only mechanism expectations to `anchor` so expected differences do not become failed grades; outcome expectations remain version-neutral.
+
 Start from what the user asked to learn or improve. A trigger question needs trigger queries, not a full skill execution. An inspectable routing or artifact claim should use focused cases and objective checks. A quality claim needs representative outputs and anonymous comparison. These modes compose when one change has both kinds of claim. Reserve a full end-to-end suite for changes whose effects cross the workflow or for conclusions explicitly scoped to the whole skill.
+
+Do not hide a material claim choice inside one proposed suite. When the request could reasonably mean either terminal effectiveness or mechanism conformance, explain the tradeoff and let the user choose before fixing the campaign goal. Recommend effectiveness when the mechanism was introduced to improve a consumed output. A conformance option must say plainly that it can prove the wiring or contract but not the benefit. This is a scope decision; the evaluator still owns fixtures, checks, judge allocation, and repetitions.
 
 Fixture fidelity must preserve constitutive context. Project instructions, installed capabilities, organization policy, external state, or mutation authority are not optional realism when the target skill depends on them. Reproduce that context or narrow the conclusion explicitly.
 
@@ -37,6 +41,18 @@ When a document, plan, review, research artifact, or decision exists to support 
 Evaluate activation separately from execution. Positive queries, adjacent negatives, and explicit invocation belong to trigger or description conformance. Behavior prompts remain ordinary user tasks and must not name-invoke the target skill, because doing so can collapse the frozen baseline and candidate onto an installed copy.
 
 User constraints on cases, hosts, repetitions, comparison refs, or budget are part of the contract. Follow them unless they make the requested conclusion unsupported; in that case explain the narrower claim before execution.
+
+## Choose The Right-Sized Experiment
+
+Select the least constructed experiment that still crosses the changed causal boundary:
+
+1. **Direct decision probe:** when the skill receives relevant state and the claim is how it interprets that state, give a fresh executor a complete realistic snapshot and ask for its exact next action, command, artifact, or user-facing report. Prohibit unrelated tool use and stop at that decision.
+2. **Simulated environment:** when discovering state, choosing a tool, or producing a side effect is part of the claim, provide only the synthetic repository, fake CLI, service, or files needed to make that behavior observable.
+3. **Stage or workflow execution:** when the claim is the quality or usefulness of a downstream result, execute through the stage that produces the result. Run the full workflow only when earlier entry would remove constitutive context or the terminal workflow outcome is itself under test.
+
+A direct decision probe is not a shortcut around the treatment. Use it only when upstream acquisition is unchanged or outside the confirmed claim; supplying a value that the changed skill must discover, validate, or transform would bypass the mechanism and invalidate the result. Give the executor situation facts, not the expected answer or grading criteria.
+
+For a comparative claim, use the same state snapshot and task for anchor and current. The discriminating probe should make the old shortcut plausible rather than quote either version's rule. Nearby current-only decision probes may establish restraints or safety invariants, but they do not count as improvement evidence.
 
 Persist the exact behavioral contract before asking for confirmation, and show the same text to the user without paraphrase. The campaign goal must already contain the terminal improvement and named regression/restraint boundaries when the user approves it. Do not create or strengthen that authority after confirmation.
 
@@ -78,6 +94,8 @@ Consider only branches relevant to the mechanism:
 
 Create the smallest sufficient set where each case proves one material boundary. One favorable finding or scenario cannot establish a broader effectiveness claim: include enough distinct realistic situations to cover the terminal improvement and every material regression, restraint, fallback, or adjacent-negative boundary implicated by the change. More paraphrases of the same branch are not broader coverage. Minimize redundant proofs within the mechanism, outcome, and regression layers; do not remove a required layer merely because another is cheaper to inspect.
 
+Routing conformance requires both sides of the decision: at least one positive dispatch case and the nearest current-runtime exclusion case. Reading the frozen source may establish what the prior version specified, but it cannot prove that the current model honors the exclusion. Give the two cases separate stop points when their observable boundaries differ.
+
 Assign each case one purpose:
 
 - `improvement`: distinguishes the intended gain from the anchor;
@@ -117,6 +135,8 @@ Do not require byte equality between independent model runs unless the output is
 The fixture should resemble the environment the skill serves, not necessarily the repository where the skill is authored. Use a synthetic repository, Git history, fake CLI, local service, project conventions, input files, or no fixture. Place executable fake commands under the fixture's `bin/` directory; it is prepended to the executor task's `PATH`. Freeze opaque bytes and copy them fresh for every arm.
 
 Use the narrowest execution boundary that preserves the causal link to the claim. A trigger or routing claim may stop before full execution. An outcome claim may bypass unrelated setup and exercise the changed stage directly, but it must still produce the artifact or behavior the real consumer receives. Design at least one representative fixture where the claimed delta could appear; if both arms are structurally unable to diverge, the fixture cannot calibrate improvement.
+
+At a routing boundary, prove dispatch with a structured tool event or sentinel side effect, then stop. Stub or fast-return the next unchanged component when it is not the claimed outcome; do not tell the executor to perform that component merely to prove it was selected. Verify the actual fixture enforces the stop: an expectation that observes a tool call does not stop the called tool or later workflow by itself. If the component reads mutable user state, either intercept it before consumption or disclose the state actually consumed without predicting its contents.
 
 Never include the suite, expected answers, comparison labels, or validation cases in a training executor workspace.
 
