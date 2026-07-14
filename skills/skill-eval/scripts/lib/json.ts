@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, open, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 export async function readJson<T>(path: string): Promise<T> {
@@ -62,11 +62,6 @@ async function withFileLock<T>(path: string, operation: () => Promise<T>): Promi
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const lockStat = await stat(lockPath).catch(() => null);
-      if (lockStat && Date.now() - lockStat.mtimeMs > 30_000) {
-        await rm(lockPath, { recursive: true, force: true });
-        continue;
-      }
       if (Date.now() >= deadline) throw new Error(`timed out waiting for state lock: ${path}`);
       await Bun.sleep(10);
     }

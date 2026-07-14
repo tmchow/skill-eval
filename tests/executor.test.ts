@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runMatrix } from "../skills/skill-eval/scripts/lib/executor.ts";
-import { hashTree, readJson, writeJson } from "../skills/skill-eval/scripts/lib/json.ts";
+import { hashTree, mergeJsonArray, readJson, writeJson } from "../skills/skill-eval/scripts/lib/json.ts";
 import type { HostAdapter, HostRequest, HostResult, RunState } from "../skills/skill-eval/scripts/lib/types.ts";
 
 class FakeAdapter implements HostAdapter {
@@ -245,6 +245,27 @@ describe("matrix execution", () => {
     const gradings = await readJson<any[]>(join(runDir, "gradings.json"));
     expect(executions.map((item) => item.attempt_id).sort()).toEqual(["parallel-one", "parallel-two"]);
     expect(gradings.map((item) => item.attempt_id).sort()).toEqual(["parallel-one", "parallel-two"]);
+  });
+
+  test("does not steal an aged lock from a live writer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "skill-eval-lock-"));
+    const path = join(root, "executions.json");
+    const lockPath = `${path}.lock`;
+    await mkdir(lockPath);
+    const aged = new Date(Date.now() - 31_000);
+    await utimes(lockPath, aged, aged);
+
+    let completed = false;
+    const update = mergeJsonArray(path, [{ id: "preserved" }], (value) => value.id)
+      .then((result) => { completed = true; return result; });
+    try {
+      await Bun.sleep(30);
+      expect(completed).toBe(false);
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+
+    expect(await update).toEqual([{ id: "preserved" }]);
   });
 
   test("runs training and validation cases as separate evidence partitions", async () => {
