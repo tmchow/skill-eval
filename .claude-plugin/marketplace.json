@@ -1,0 +1,26 @@
+{
+  "name": "skill-eval",
+  "owner": {
+    "name": "Trevin Chow"
+  },
+  "metadata": {
+    "description": "Cross-model skill evals with realistic benchmarks, independent judgment, and evidence-backed improvement advice",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "skill-eval",
+      "description": "Run cross-model skill evals that benchmark source changes, diagnose failures, and deliver evidence-backed improvement advice across Claude Code and Codex.",
+      "author": {
+        "name": "Trevin Chow"
+      },
+      "homepage": "https://github.com/tmchow/skill-eval",
+      "tags": [
+        "evaluation",
+        "skills",
+        "benchmarking"
+      ],
+      "source": "./"
+    }
+  ]
+}
